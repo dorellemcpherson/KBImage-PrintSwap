@@ -255,6 +255,7 @@ body {
 .ps-confirm-text { font-size: 12px; line-height: 16px; color: var(--text); }
 .ps-redo-hot { color: var(--accentfg); background: var(--accent); padding: 0 6px; border-radius: 2px; font-weight: 600; }
 .ps-garment-note { padding: 6px var(--pad); color: var(--alert); }
+.ps-gtype-missing { padding: 6px var(--pad); color: var(--text); }
 /* Fal render progress bar (moved under the button that started the run) */
 .fal-prog { margin-top: 6px; }
 .fal-prog-track { height: 3px; background: var(--inset); border-radius: 2px; overflow: hidden; }
@@ -706,6 +707,7 @@ code {
       <div class="ps-step" id="ps-step-2">
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="2"><span class="ps-step-num">2</span><span class="ps-step-name">Garment</span><span id="ps-step-redo-2" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="2">Redo</span><span id="ps-step-state-2" class="ps-step-state">ready</span></div>
         <div id="ps-garment-note" class="ps-cost ps-garment-note hidden">Your selection isn't saved to the garment. Use + Add, − Subtract or Use selection as garment.</div>
+        <div id="ps-gtype-missing" class="ps-cost ps-gtype-missing hidden">This file has no garment type saved — pick it again (nothing is deleted).</div>
         <div id="ps-step-body-2" class="ps-step-body hidden">
           <div class="field">
             <span class="field-label">Garment type</span>
@@ -865,7 +867,7 @@ code {
       <div class="ps-step" id="ps-step-5">
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="5"><span class="ps-step-num">5</span><span class="ps-step-name">Gray</span><span id="ps-step-redo-5" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="5">Redo</span><span id="ps-step-state-5" class="ps-step-state">locked</span></div>
         <div id="ps-step-body-5" class="ps-step-body hidden">
-          <div id="ps-gray-btn" class="btn-main btn-solid disabled" role="button" tabindex="0" data-action="ps-make-gray">Make gray</div>
+          <div id="ps-gray-btn" class="btn-secondary disabled" role="button" tabindex="0" data-action="ps-make-gray">Make gray</div>
           <div id="ps-gray-cost" class="ps-cost">Photoshop · free</div>
           <div id="ps-recall-anchor-5" class="ps-recall-anchor"></div>
           <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-5"><span id="ps-set-5-arrow">▸</span> Settings</span>

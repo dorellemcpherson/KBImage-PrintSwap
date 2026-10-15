@@ -4992,11 +4992,21 @@
   // follows the document and survives a panel reload.
   function psGtypeShort(t) { if (t && t.id === PS_OTHER_ID) return "Other"; return t ? t.id + " " + String(t.label).replace(/^[A-Z] · /, "").split(",")[0] : ""; }   // "B Nightgown"
   let psGtypeDocId = null;
+  let psGtypeMissing = false;                         // Print Swap layers in the document but no saved type
+  // Does the active document already hold Print Swap work (a KBPS channel or a plug-in layer)?
+  function psDocHasPrintSwap() {
+    try {
+      const d = psMod().app.activeDocument; if (!d) return false;
+      const cs = d.channels; for (let i = 0; i < cs.length; i++) if (String(cs[i].name).indexOf("KBPS") === 0) return true;
+      const t = d.layers; for (let i = 0; i < t.length; i++) if (psIsPrintSwapLayerName(String(t[i].name))) return true;
+    } catch (_) {}
+    return false;
+  }
   function psGtypeFollowDoc() {
     let id = null;
     try { const d = psMod().app.activeDocument; id = d ? d.id : null; } catch (_) {}
     if (id === psGtypeDocId) return;
-    psGtypeDocId = id; psGarmentType = null; psGtypePendingChange = null; psDocType = null; psOtherExtra = [];
+    psGtypeDocId = id; psGarmentType = null; psGtypePendingChange = null; psDocType = null; psOtherExtra = []; psGtypeMissing = false;
     psStaleSteps = []; psStaleDocId = id;                  // out-of-date steps belong to the document too
     try { psPipingModeReset(); } catch (_) {}              // a new document's piping mode is picked again
     psGtypeRender();
@@ -5021,14 +5031,23 @@
         try { trace("ps: garment type from the document → " + g); } catch (_) {}
         psGtypeRender();
         try { psStepsRefresh(); } catch (_) {}
+        return;
       }
-    }).catch(function () {});
+      psGtypeNoneSaved(id);
+    }).catch(function (e) { try { traceErr("ps: read garment type from the document", e); } catch (_) {} psGtypeNoneSaved(id); });
+  }
+  // No type saved but Print Swap work in the file: ask for it again (picking it resets nothing).
+  function psGtypeNoneSaved(id) {
+    if (psGtypeDocId !== id || psGarmentType || !psDocHasPrintSwap()) return;
+    psGtypeMissing = true;
+    try { trace("ps: no garment type saved in this document"); } catch (_) {}
+    psGtypeRender();
+    try { psStepsRefresh(); } catch (_) {}
   }
   async function psGtypeFromDoc() {
-    const xmp = await psXmpGet();
-    const m = /<kbps:state>([\s\S]*?)<\/kbps:state>/.exec(xmp);
-    if (!m) return null;
-    const s = JSON.parse(psXmlUnesc(m[1]));
+    const f = psXmpStateFind(await psXmpGet());
+    if (!f) return null;
+    const s = JSON.parse(f.json);
     return s ? { id: s.gtype || null, def: s.gtypeDef || null, stale: s.garmentStale || [] } : null;
   }
   async function psGtypeSave(id) {
@@ -5092,6 +5111,8 @@
     if (cost) cost.textContent = psPartsCostText();
     const cf = $("ps-gtype-confirm");
     if (cf) cf.classList.toggle("hidden", !psGtypePendingChange);
+    const gm = $("ps-gtype-missing");
+    if (gm) gm.classList.toggle("hidden", !(psGtypeMissing && !t));
     try { psTrimsRender(); } catch (_) {}
   }
   // What a type change after step 2 deletes (steps 3–9): plug-in layers by their exact
@@ -5114,6 +5135,7 @@
     const nt = psGtypeById(id);
     if (!nt || id === psGarmentType) { psGtypePendingChange = null; psGtypeRender(); return; }
     if (generateInFlight) { setStatus("bad", "Wait for the current step to finish, then change the type."); psGtypeRender(); return; }
+    if (psGtypeMissing) { psGtypeMissing = false; psGtypeApply(id); return; }   // the type was lost, not changed: nothing is reset
     const after2 = !!psGarmentType && kbChannelExists(PS_GARMENT_CH);
     const tg = after2 ? psGtypeResetTargets() : { layers: [], chans: [] };
     if (tg.layers.length || tg.chans.length) {
@@ -5869,7 +5891,28 @@
   // rotDeg = the whole-garment turn; a part prints at auto + rotDeg + nudge.
   function psStateEmpty() { return { v: 1, scalePct: 100, rotDeg: 0, printName: null, parts: {} }; }
   function psXmlEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-  function psXmlUnesc(s) { return String(s).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"); }
+  function psXmlUnesc(s) {
+    return String(s).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/&#x([0-9a-f]+);/gi, function (_, h) { return String.fromCharCode(parseInt(h, 16)); })
+      .replace(/&#(\d+);/g, function (_, d) { return String.fromCharCode(Number(d)); }).replace(/&amp;/g, "&");
+  }
+  // Our state in the document's XMP, whatever prefix Photoshop gave the namespace (a
+  // prefix already taken in this session gets renamed, e.g. kbps_1) and whether it was
+  // kept as an element or rewritten as an attribute. → { prefix, form, raw, json } or null.
+  function psXmpStateFind(xmp) {
+    const x = String(xmp || ""), re = /xmlns:([A-Za-z_][\w.-]*)\s*=\s*["']([^"']*)["']/g;
+    const prefixes = [];
+    let m;
+    while ((m = re.exec(x))) if (m[2] === PS_STATE_NS && prefixes.indexOf(m[1]) < 0) prefixes.push(m[1]);
+    for (let i = 0; i < prefixes.length; i++) {
+      const p = prefixes[i].replace(/[.]/g, "\\.");
+      const el = new RegExp("<" + p + ":state>([\\s\\S]*?)</" + p + ":state>").exec(x);
+      if (el) return { prefix: prefixes[i], form: "element", raw: el[0], json: psXmlUnesc(el[1]) };
+      const at = new RegExp("\\b" + p + ":state\\s*=\\s*\"([^\"]*)\"").exec(x) || new RegExp("\\b" + p + ":state\\s*=\\s*'([^']*)'").exec(x);
+      if (at) return { prefix: prefixes[i], form: "attribute", raw: at[0], json: psXmlUnesc(at[1]) };
+    }
+    return null;
+  }
   async function psXmpGet() {
     const res = await psMod().action.batchPlay(
       [{ _obj: "get", _target: [{ _ref: "property", _property: "XMPMetadataAsUTF8" }, { _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
@@ -5878,9 +5921,8 @@
   }
   async function psStateLoad() {
     try {
-      const xmp = await psXmpGet();
-      const m = /<kbps:state>([\s\S]*?)<\/kbps:state>/.exec(xmp);
-      if (m) { const s = JSON.parse(psXmlUnesc(m[1])); if (s && s.parts) return s; }
+      const f = psXmpStateFind(await psXmpGet());
+      if (f) { const s = JSON.parse(f.json); if (s && s.parts) return s; }
     } catch (e) { traceErr("ps state: read from document (trying plug-in file)", e); }
     try {
       const f = await (await fsLocal().getDataFolder()).getEntry(PS_STATE_FILE);
@@ -5896,7 +5938,9 @@
     try {
       let xmp = await psXmpGet();
       const el = "<kbps:state>" + psXmlEsc(json) + "</kbps:state>";
-      if (/<kbps:state>[\s\S]*?<\/kbps:state>/.test(xmp)) xmp = xmp.replace(/<kbps:state>[\s\S]*?<\/kbps:state>/, el);
+      const f = psXmpStateFind(xmp);
+      if (f && f.form === "element") xmp = xmp.replace(f.raw, function () { return "<" + f.prefix + ":state>" + psXmlEsc(json) + "</" + f.prefix + ":state>"; });
+      else if (f) xmp = xmp.replace(f.raw, function () { return f.prefix + ':state="' + psXmlEsc(json).replace(/"/g, "&quot;") + '"'; });
       else {
         const desc = '<rdf:Description rdf:about="" xmlns:kbps="' + PS_STATE_NS + '">' + el + "</rdf:Description>";
         if (/<\/rdf:RDF>/.test(xmp)) xmp = xmp.replace(/<\/rdf:RDF>/, desc + "</rdf:RDF>");
@@ -5907,8 +5951,9 @@
           [{ _obj: "set", _target: [{ _ref: "property", _property: "XMPMetadataAsUTF8" }, { _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
              to: { _obj: "document", XMPMetadataAsUTF8: xmp }, _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
       }, { commandName: "KBImage — save print settings" });
-      const check = await psXmpGet();                      // confirm it really landed
-      inDoc = check.indexOf("<kbps:state>") >= 0;
+      const back = psXmpStateFind(await psXmpGet());       // confirm it really landed (any prefix, either form)
+      inDoc = !!back && (function () { try { return !!JSON.parse(back.json).parts; } catch (_) { return false; } })();
+      if (!inDoc) trace("ps state: the document's XMP did not keep it" + (back ? " (read back different)" : " (not found after the write)"));
     } catch (e) { traceErr("ps state: save in document", e); }
     try {
       const folder = await fsLocal().getDataFolder();
