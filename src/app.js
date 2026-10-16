@@ -76,6 +76,8 @@
           closeAllDropdowns();
           if (grp === "psgtype") {
             if (typeof psSetGarmentType === "function") psSetGarmentType(val);
+          } else if (grp === "pspart") {
+            if (typeof psPickPart === "function") psPickPart(val);                 // step 7 "This part" picker
           }
           return;
         }
@@ -145,11 +147,18 @@
     }
   }
 
+  // Enter in a step 7 box does what its Apply does.
+  const PS_ENTER_APPLY = { "ps-print-scale": 1, "ps-print-rot-exact": 1, "ps-part-scale": 1, "ps-part-rot-exact": 1 };
   function handleKeydown(e) {
     if (e.key !== "Enter" && e.key !== " ") return;
     const t = e.target;
     if (!t) return;
     const tag = (t.tagName || "").toLowerCase();
+    if (e.key === "Enter" && tag === "input" && PS_ENTER_APPLY[t.id]) {
+      const row = t.closest(".key-row"), apply = row && row.querySelector(".btn-ghost[data-action]");
+      if (apply) { e.preventDefault(); apply.click(); }
+      return;
+    }
     if (tag === "input" || tag === "textarea") return;
     if (t.matches && t.matches('[role="button"], [role="tab"], .pill, .dd-option, [data-action], [data-view]')) {
       e.preventDefault();
@@ -4979,6 +4988,7 @@
       g.appendChild(row);
     }
     psUpdateShapesLink();
+    try { psPartPickersRender(readPills("pills-ps-parts", null)); } catch (_) {}   // step 7 pickers list the same parts
   }
   function psUpdateShapesLink() {
     const a = $("ps-shapes-link");
@@ -5953,8 +5963,9 @@
   let psPrintTex = null;                              // { key, tex } — its pixels, read once
   let psShadeArmUntil = 0;
 
-  // ----- Saved state: { scalePct, rotDeg, printName, parts: { NAME: { auto, nudge, scale } } } -----
-  // rotDeg = the whole-garment turn; a part prints at auto + rotDeg + nudge.
+  // ----- Saved state: { scalePct, rotDeg, printName, parts: { NAME: { auto, own, nudge, scale } } } -----
+  // rotDeg = the whole-garment angle. A part prints at auto (its direction) + its own
+  // angle when it has one, else + rotDeg (+ nudge, an offset kept from older files).
   function psStateEmpty() { return { v: 1, scalePct: 100, rotDeg: 0, printName: null, parts: {} }; }
   function psXmlEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
   function psXmlUnesc(s) {
@@ -6039,21 +6050,62 @@
   async function psPrintRefreshPart() {
     const name = readPills("pills-ps-parts", null);
     const lbl = $("ps-print-part");
-    if (lbl) lbl.textContent = name || "none (pick one in step 6)";
-    const ov = $("ps-part-scale"), ang = $("ps-part-angle"), gr = $("ps-print-rot");
+    if (lbl) { lbl.textContent = name || "none (pick a part)"; lbl.classList.toggle("ps-part-on", !!name); }
+    psPartPickersRender(name);
+    psPrintButtonSync();
+    const ov = $("ps-part-scale"), ang = $("ps-part-angle"), gr = $("ps-print-rot"), ex = $("ps-part-rot-exact");
     let st = null;
     try { st = await psStateLoad(); } catch (_) {}
     const g = st ? Number(st.rotDeg) || 0 : 0;
     if (gr) gr.textContent = "Angle: " + psDegText(g);
-    if (!name) { if (ang) ang.textContent = "Angle: 0°"; return; }
-    const p = st && st.parts[name];
+    const gs = $("ps-print-scale");
+    if (gs && st && st.scalePct && document.activeElement !== gs) gs.value = String(st.scalePct);
+    const p = name && st ? st.parts[name] : null;
     if (ov) ov.value = (p && p.scale != null) ? String(p.scale) : "";
-    if (ang) ang.textContent = "Angle: " + psDegText(Number(p && p.nudge) || 0)
-      + ((p && p.auto != null) ? " (prints at " + psDegText((Number(p.auto) || 0) + g + (Number(p.nudge) || 0)) + ")" : "");
+    if (ex) ex.value = (p && p.own != null) ? String(p.own) : "";
+    if (ang) ang.textContent = "Angle: " + psDegText(name ? psPartAngle(p, g) : g);
+  }
+  // A part's angle as the retoucher sees it: its own (absolute) angle, else the
+  // whole-garment angle (+ an older per-part offset). The print sits at the part's
+  // own direction (auto) + this.
+  function psPartAngle(pst, garmentRot) {
+    if (pst && pst.own != null && isFinite(Number(pst.own))) return Number(pst.own);
+    return (Number(garmentRot) || 0) + (Number(pst && pst.nudge) || 0);
+  }
+  function psWrapDeg(v) { return Math.round((((v + 180) % 360 + 360) % 360 - 180) * 10) / 10; }   // −180 … +180
+  // Step 7's Part picker: every part in the step 6 order. Picking one = clicking its pill.
+  function psPartPickerNames() {
+    const g = $("pills-ps-parts");
+    const pills = g ? Array.from(g.querySelectorAll(".pill")).map(function (p) { return p.getAttribute("data-value"); }) : [];
+    return pills.length ? pills : psPartNames();
+  }
+  function psPartPickersRender(name) {
+    const names = psPartPickerNames(), sig = names.join("|"), menu = $("dd-pspart-menu");
+    if (!menu) return;
+    if (menu.getAttribute("data-sig") !== sig) {
+      while (menu.firstChild) menu.removeChild(menu.firstChild);
+      menu.setAttribute("data-sig", sig);
+      names.forEach(function (n) {
+        const o = document.createElement("div");
+        o.className = "dd-option"; o.setAttribute("role", "option"); o.setAttribute("tabindex", "0");
+        o.setAttribute("data-dd-group", "pspart"); o.setAttribute("data-dd-value", n);
+        o.textContent = n;
+        menu.appendChild(o);
+      });
+    }
+    const os = menu.querySelectorAll(".dd-option");
+    for (let i = 0; i < os.length; i++) os[i].classList.toggle("selected", os[i].getAttribute("data-dd-value") === name);
+  }
+  function psPickPart(name) {
+    if (!name) return;
+    if (!psSetPartPill(name)) { setStatus("bad", "Find parts and Accept them first (step 6), then pick a part."); return; }
+    psOnPartPicked(name);                                  // the selection and the Layers panel, as the pill
+    psPrintOnPartPicked(name);                             // both pickers, the Selected part line, scale and angle
   }
   // 0° / +2° / -7.5° (clockwise is +).
   function psDegText(v) { const r = Math.round(v * 10) / 10; return (r > 0 ? "+" : "") + r + "°"; }
   function psPrintOnTabOpen() {
+    psPrintButtonSync();
     const el = $("ps-print-name");
     if (el) el.textContent = psPrint ? psPrint.name : "No print chosen";
     psPrintThumbRender();
@@ -6210,7 +6262,7 @@
   }
 
   // Tile the print into one part → its PRINT layer. Returns the layer id, or null
-  // (empty part: any old PRINT removed). pst = the part's saved { auto, nudge, scale }.
+  // (empty part: any old PRINT removed). pst = the part's saved { auto, own, nudge, scale }.
   async function psRenderPartPrint(name, pst, garmentScale, tex, garmentRot) {
     const ps = psMod();
     const shape = psShapeLayer(name);
@@ -6227,7 +6279,7 @@
     const scale = (pst.scale != null && pst.scale > 0) ? pst.scale : garmentScale;
     const tileW = Math.max(2, Math.round(tex.layerW * scale / 100));
     const tileH = Math.max(2, Math.round(tex.layerH * scale / 100));
-    const rot = (Number(pst.auto) || 0) + (Number(garmentRot) || 0) + (Number(pst.nudge) || 0);
+    const rot = (Number(pst.auto) || 0) + psPartAngle(pst, garmentRot);   // the part's direction + its angle
     const buf = kbComposeTile(bw, bh, bbox.left, bbox.top, tex.data, tex.width, tex.height, tex.components,
       tileW, tileH, rot, (bbox.left + bbox.right) / 2, (bbox.top + bbox.bottom) / 2, null);
     for (let i = 3; i < buf.length; i += 4) {             // opaque PNG only (transparent ones landed shifted)
@@ -6269,7 +6321,8 @@
     try {
       const tex = await psPrintTexture();
       const state = await psStateLoad();
-      state.scalePct = params.scalePct;
+      if (params.scalePct != null) state.scalePct = params.scalePct;      // Swap keeps the saved scale
+      params.scalePct = state.scalePct || 100;
       state.printName = params.printName;
       const ids = [], placed = [], empty = [];
       const printNames = psPartNames().filter(function (n) { return n !== PS_UNASSIGNED; });
@@ -6304,7 +6357,7 @@
     if (psOtherPending("printswap:print")) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); return; }
     if (!psPrint) { setStatus("bad", "Click Choose print first."); return; }
     const op = keepAngles ? "printswap:print-swap" : "printswap:print";
-    const params = function () { return { printName: psPrint ? psPrint.name : null, scalePct: psPrintScale(), keepAngles: !!keepAngles }; };
+    const params = function () { return { printName: psPrint ? psPrint.name : null, scalePct: keepAngles ? null : psPrintScale(), keepAngles: !!keepAngles }; };   // Swap: the saved scale
     const p = params();
     generateInFlight = true;
     traceStart("Print Swap — " + (keepAngles ? "Swap print " : "Place print ") + p.printName);
@@ -6340,6 +6393,100 @@
   // the exact angle typed in. Saved with the scale and angles; every part that has a
   // print is tiled again from the print file (nothing is transformed). With no print
   // placed yet, the angle is only saved and used by Place print.
+  // Every part that has a print, tiled again from the print file with `state` (scale and
+  // angles). Returns the parts redone, or null (status set) when the print file is not
+  // known since a panel reload. A Place / Swap preview waiting keeps the NEW layers.
+  async function psRedoAllPrints(state, verb) {
+    const parts = psPartNames().filter(function (n) { return n !== PS_UNASSIGNED && psPrintIds(n).length; });
+    if (parts.length && !psPrint) { setStatus("bad", "Click Choose print first (pick the same file again after a panel reload)."); return null; }
+    const redone = [];
+    if (!parts.length) return redone;
+    const tex = await psPrintTexture();
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i], old = psPrintIds(name);
+      setStatus("busy", verb + " " + name + " (" + (i + 1) + " of " + parts.length + ")…");
+      const pst = state.parts[name] || { auto: null, nudge: 0, scale: null };
+      const id = await psRenderPartPrint(name, pst, state.scalePct || psPrintScale(), tex, state.rotDeg);
+      state.parts[name] = pst;
+      redone.push(name);
+      if (pendingRecall && Array.isArray(pendingRecall.layerIds)) {
+        pendingRecall.layerIds = pendingRecall.layerIds.filter(function (x) { return old.indexOf(x) < 0; });
+        if (id != null) pendingRecall.layerIds.push(id);
+      }
+    }
+    return redone;
+  }
+  // Whole garment scale Apply (or Enter): every part without its own scale follows it.
+  async function actPsPrintScaleApply() {
+    if (generateInFlight) return;
+    if (!psMod().app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
+    const raw = String((($("ps-print-scale") || {}).value) || "").trim().replace("%", ""), v = Number(raw);
+    if (raw === "" || !(v > 0)) { setStatus("bad", "Type the whole-garment scale in % first (for example 100)."); return; }
+    generateInFlight = true;
+    traceStart("Print Swap — scale (whole garment)");
+    try {
+      const state = await psStateLoad();
+      const was = state.scalePct;
+      state.scalePct = Math.min(1000, v);
+      const redone = await psRedoAllPrints(state, "Scaling the print in");
+      if (redone === null) return;
+      const inDoc = await psStateSave(state);
+      const rec = logRecordSkeleton("printswap:print-scale", { fromPct: was, scalePct: state.scalePct, parts: redone.length }, null, "print:" + (psPrint ? psPrint.name : ""));
+      await logRun(rec); await logFinalizeCommitted(rec.id);
+      const mm = redone.length && !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;
+      setStatus("ok", "Whole garment: scale " + state.scalePct + "%" + (redone.length ? ", print redone in " + redone.length + " part(s)." : ". Choose print uses it.")
+        + (inDoc ? "" : " Saved in the plug-in folder only.") + (mm ? " " + mm : ""));
+    } catch (err) {
+      traceErr("ps print scale", err);
+      setStatus("bad", "Could not scale the print: " + ((err && err.message) || String(err)));
+    } finally {
+      generateInFlight = false;
+      try { psPrintRefreshPart(); } catch (_) {}
+      await traceFlush();
+    }
+  }
+  // Reset scale and rotation: whole garment 100% and 0°, every part's own scale and angle
+  // cleared, the print redone. No confirm (nothing is deleted).
+  async function actPsPrintReset() {
+    if (generateInFlight) return;
+    if (!psMod().app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
+    generateInFlight = true;
+    traceStart("Print Swap — reset scale and rotation");
+    try {
+      const state = await psStateLoad();
+      state.scalePct = 100; state.rotDeg = 0;
+      Object.keys(state.parts || {}).forEach(function (n) { const p = state.parts[n]; if (p) { p.scale = null; p.own = null; p.nudge = 0; } });
+      const sc = $("ps-print-scale"); if (sc) sc.value = "100";
+      const ex = $("ps-print-rot-exact"); if (ex) ex.value = "";
+      const redone = await psRedoAllPrints(state, "Resetting the print in");
+      if (redone === null) return;
+      const inDoc = await psStateSave(state);
+      const rec = logRecordSkeleton("printswap:print-reset", { parts: redone.length }, null, "print:" + (psPrint ? psPrint.name : ""));
+      await logRun(rec); await logFinalizeCommitted(rec.id);
+      const mm = redone.length && !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;
+      setStatus("ok", "Scale and rotation reset: 100% and 0° for the whole garment, no part settings" + (redone.length ? ", print redone in " + redone.length + " part(s)." : ".")
+        + (inDoc ? "" : " Saved in the plug-in folder only.") + (mm ? " " + mm : ""));
+    } catch (err) {
+      traceErr("ps print reset", err);
+      setStatus("bad", "Could not reset the print: " + ((err && err.message) || String(err)));
+    } finally {
+      generateInFlight = false;
+      try { psPrintRefreshPart(); } catch (_) {}
+      await traceFlush();
+    }
+  }
+  // One print button: Choose print places the print at once; once placed it is Swap print
+  // (a new file into every part, scale and angles kept).
+  function psPrintPlaced() { try { return psPartNames().some(function (n) { return psPrintIds(n).length > 0; }); } catch (_) { return false; } }
+  function psPrintButtonSync() { const b = $("ps-print-btn"); if (b) b.textContent = psPrintPlaced() ? "Swap print" : "Choose print"; }
+  async function actPsPrintButton() {
+    if (generateInFlight) return;
+    if (psPrintPlaced()) { await actPsSwapPrint(); return; }
+    const picked = await actPsChoosePrint(true);
+    if (!picked) return;
+    await psRunPrint(false);
+  }
+
   async function actPsPrintRotate(srcEl) {
     if (generateInFlight) return;
     if (!psMod().app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
@@ -6360,25 +6507,8 @@
       let now = target != null ? target : was + d;
       now = Math.round((((now + 180) % 360 + 360) % 360 - 180) * 10) / 10;   // −180 … +180
       state.rotDeg = now;
-      const parts = psPartNames().filter(function (n) { return n !== PS_UNASSIGNED && psPrintIds(n).length; });
-      if (parts.length && !psPrint) { setStatus("bad", "Click Choose print first (pick the same file again after a panel reload)."); return; }
-      const redone = [];
-      if (parts.length) {
-        const tex = await psPrintTexture();
-        for (let i = 0; i < parts.length; i++) {
-          const name = parts[i], old = psPrintIds(name);
-          setStatus("busy", "Turning the print in " + name + " (" + (i + 1) + " of " + parts.length + ")…");
-          const pst = state.parts[name] || { auto: null, nudge: 0, scale: null };
-          const id = await psRenderPartPrint(name, pst, state.scalePct || psPrintScale(), tex, now);
-          state.parts[name] = pst;
-          redone.push(name);
-          // A Place / Swap preview still waiting must discard the NEW layer on Re-run.
-          if (pendingRecall && Array.isArray(pendingRecall.layerIds)) {
-            pendingRecall.layerIds = pendingRecall.layerIds.filter(function (x) { return old.indexOf(x) < 0; });
-            if (id != null) pendingRecall.layerIds.push(id);
-          }
-        }
-      }
+      const redone = await psRedoAllPrints(state, "Turning the print in");
+      if (redone === null) return;
       const inDoc = await psStateSave(state);
       const rec = logRecordSkeleton("printswap:print-rotate", { fromDeg: was, rotDeg: now, parts: redone.length }, null, "print:" + (psPrint ? psPrint.name : ""));
       await logRun(rec);
@@ -6405,15 +6535,27 @@
     const old = psPrintIds(name);
     if (!old.length) { setStatus("bad", name + " has no print yet. Click Place print first."); return; }
     const d = Number(srcEl && srcEl.getAttribute && srcEl.getAttribute("data-deg")) || 0;
-    const reset = !!(srcEl && srcEl.getAttribute && srcEl.getAttribute("data-reset"));
+    const zero = !!(srcEl && srcEl.getAttribute && srcEl.getAttribute("data-reset"));   // the 0° button: this part at 0°
+    let follow = false, exact = zero ? 0 : null;           // follow = back to the whole-garment angle
+    if (srcEl && srcEl.getAttribute && srcEl.getAttribute("data-set") === "field") {
+      const raw = String((($("ps-part-rot-exact") || {}).value) || "").trim().replace("°", "");
+      if (raw === "") follow = true;
+      else {
+        const v = Number(raw);
+        if (!isFinite(v)) { setStatus("bad", "Type an angle in degrees (for example -7.5; clockwise is +), or leave it empty for the whole-garment angle."); return; }
+        exact = Math.round(v * 10) / 10;
+      }
+    }
     generateInFlight = true;
     traceStart("Print Swap — adjust " + name);
     try {
       const tex = await psPrintTexture();
       const state = await psStateLoad();
       const pst = state.parts[name] || { auto: null, nudge: 0, scale: null };
-      if (reset) pst.nudge = 0;
-      else if (d) pst.nudge = (Number(pst.nudge) || 0) + d;
+      const g = Number(state.rotDeg) || 0;
+      if (follow) { pst.own = null; pst.nudge = 0; }                          // follows the whole garment again
+      else if (exact != null) { pst.own = psWrapDeg(exact); pst.nudge = 0; }  // absolute: whatever the whole garment is
+      else if (d) { pst.own = psWrapDeg(psPartAngle(pst, g) + d); pst.nudge = 0; }   // turns from where it is now
       else {
         const raw = String((($("ps-part-scale") || {}).value) || "").trim();
         const v = Number(raw);
@@ -6427,12 +6569,12 @@
         pendingRecall.layerIds = pendingRecall.layerIds.filter(function (x) { return old.indexOf(x) < 0; });
         if (id != null) pendingRecall.layerIds.push(id);
       }
-      const rec = logRecordSkeleton("printswap:part-adjust", { part: name, nudgeDeg: pst.nudge, scale: pst.scale }, id, "print:" + psPrint.name);
+      const rec = logRecordSkeleton("printswap:part-adjust", { part: name, ownDeg: pst.own == null ? null : pst.own, scale: pst.scale }, id, "print:" + psPrint.name);
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
       const mm = !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;   // kept at once: the newest MERGED is redone
       await psSelectPartInLayers(name);                                     // the part stays selected in Layers
-      setStatus("ok", name + ": " + (reset ? "back to the whole-garment angle" : d ? "turned " + (d > 0 ? "clockwise " : "counterclockwise ") + Math.abs(d) + "° (part angle " + psDegText(pst.nudge) + ")"
+      setStatus("ok", name + ": " + (follow ? "follows the whole garment again (" + psDegText(psPartAngle(pst, state.rotDeg)) + ")" : exact != null ? "angle " + psDegText(pst.own) : d ? "turned " + (d > 0 ? "clockwise " : "counterclockwise ") + Math.abs(d) + "°, angle " + psDegText(pst.own)
         : (pst.scale == null ? "uses the garment scale" : "scale " + pst.scale + "%")) + "."
         + (inDoc ? "" : " Saved in the plug-in folder only.") + (mm ? " " + mm : ""));
     } catch (err) {
@@ -8038,6 +8180,7 @@
   }
   function psStepsRefresh() {
     try { psGtypeFollowDoc(); } catch (_) {}
+    try { psPrintButtonSync(); } catch (_) {}                 // Choose print / Swap print
     const gt = psGtypeById(psGarmentType);
     for (let n = 1; n <= PS_STEP_COUNT; n++) {
       const el = $("ps-step-state-" + n);
@@ -8983,7 +9126,9 @@
     "ps-part-check":         actPsPartCheck,
     "ps-edit-part":          actPsEditPart,
     "ps-toggle-shapes":      actPsToggleShapes,
-    "ps-choose-print":       actPsChoosePrint,   // 7 Print
+    "ps-choose-print":       actPsPrintButton,   // 7 Print: Choose print places at once; then Swap print
+    "ps-print-scale-apply":  actPsPrintScaleApply,
+    "ps-print-reset":        actPsPrintReset,
     "ps-place-print":        actPsPlacePrint,
     "ps-swap-print":         actPsSwapPrint,
     "ps-part-adjust":        actPsPartAdjust,

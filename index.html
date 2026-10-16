@@ -271,6 +271,9 @@ body {
 .ps-angle { color: var(--text); }
 .ps-group-head { font-size: 11px; line-height: 14px; font-weight: 600; color: var(--text); letter-spacing: 0.5px; }
 .ps-row-label { flex: 0 0 auto; width: 88px; font-size: 11px; color: var(--dim); }
+.dropdown.ps-part-dd { flex: 1 1 auto; width: auto; min-width: 0; }                      /* the Part picker */
+.ps-part-label { flex: 0 0 auto; }
+.ps-part-on { color: var(--accent); }                                             /* the selected part, as Redo */
 #ps-step-body-7 .btn-row > .ps-cost + .ps-cost { margin-left: 8px; }   /* file types, then the print name */
 .ps-step-body { padding: 10px var(--pad) 12px; border-top: 1px solid var(--line); }
 .ps-step-body > * + * { margin-top: 8px; }
@@ -920,7 +923,7 @@ code {
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="7"><span class="ps-step-num">7</span><span class="ps-step-name">Print</span><span id="ps-step-redo-7" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="7">Redo</span><span id="ps-step-state-7" class="ps-step-state">locked</span></div>
         <div id="ps-step-body-7" class="ps-step-body hidden">
           <div class="btn-row">
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-choose-print">Choose print</div>
+            <div id="ps-print-btn" class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-choose-print">Choose print</div>
             <span class="ps-cost">PNG, JPG, TIF</span>
             <span id="ps-print-name" class="ps-cost">No print chosen</span>
           </div>
@@ -928,21 +931,27 @@ code {
             <img id="ps-print-thumb-img" class="hidden" alt="Chosen print" />
             <div id="ps-print-thumb-info" class="ps-cost"></div>
           </div>
-          <div class="btn-row">
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-place-print">Place print</div>
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-swap-print">Swap print</div>
-          </div>
           <div class="ps-cost">Photoshop · free</div>
           <div id="ps-recall-anchor-7" class="ps-recall-anchor"></div>
-          <div class="field-label">Selected part: <span id="ps-print-part">none (pick one in step 6)</span></div>
+          <div class="key-row">
+            <span class="field-label ps-part-label">Part:</span>
+            <div class="dropdown ps-part-dd" id="dd-pspart">
+              <div class="dd-trigger" role="button" tabindex="0" data-dd="pspart" aria-haspopup="listbox" aria-label="Part">
+                <span class="dd-value" id="ps-print-part">none (pick a part)</span>
+                <span class="dd-caret">▾</span>
+              </div>
+              <div class="dd-menu hidden" id="dd-pspart-menu" role="listbox"></div>
+            </div>
+          </div>
           <div class="ps-group-head">SCALE</div>
           <div class="key-row">
             <span class="ps-row-label">Whole garment</span>
             <input id="ps-print-scale" class="input" type="text" value="100" autocomplete="off" spellcheck="false" />
+            <div class="btn-ghost" role="button" tabindex="0" data-action="ps-print-scale-apply">Apply</div>
           </div>
           <div class="key-row">
             <span class="ps-row-label">This part</span>
-            <input id="ps-part-scale" class="input" type="text" value="" placeholder="empty = garment" autocomplete="off" spellcheck="false" />
+            <input id="ps-part-scale" class="input" type="text" value="" placeholder="empty = whole garment" autocomplete="off" spellcheck="false" />
             <div class="btn-ghost" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="0">Apply</div>
           </div>
           <div class="ps-divider"></div>
@@ -965,8 +974,13 @@ code {
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="-1" title="Rotate counterclockwise 1°">↺ 1°</div>
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="1" title="Rotate clockwise 1°">↻ 1°</div>
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="15" title="Rotate clockwise 15°">↻ 15°</div>
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-reset="1" title="Back to the whole-garment angle">0°</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-reset="1" title="Set this part to 0°">0°</div>
           </div>
+          <div class="key-row">
+            <input id="ps-part-rot-exact" class="input" type="text" value="" placeholder="empty = whole garment" autocomplete="off" spellcheck="false" />
+            <div class="btn-ghost" role="button" tabindex="0" data-action="ps-part-adjust" data-set="field">Apply</div>
+          </div>
+          <span class="text-action" role="button" tabindex="0" data-action="ps-print-reset">Reset scale and rotation</span>
         </div>
       </div>
 
