@@ -2232,6 +2232,7 @@
 
   async function kbSelectLayerById(id) {
     if (id == null) return false;
+    psPanelLayerSelAt = Date.now();                     // the panel's own select: the Layers listener skips it
     try {
       await psMod().action.batchPlay(
         [{ _obj: "select",
@@ -5353,7 +5354,73 @@
     psGtypeRender();
   }
 
-  // Row clicked: that part's pixels become the selection; its shape layer is picked.
+  // ONE SELECTED PART, both ways. The step 6 pill is the selected part: clicking it
+  // selects the part's group in the Layers panel (opened by selecting a layer inside it
+  // first); selecting a part's group, PRINT or shape layer in the Layers panel makes it
+  // the selected part (pill, step 7 line, This part scale and angle). Anything else
+  // leaves the selected part as it is. Selects the panel makes are stamped
+  // (psPanelLayerSelAt in kbSelectLayerById) and skipped, so nothing loops.
+  let psPanelLayerSelAt = 0, psLayerSelTimer = null;
+  // Inside executeAsModal: the part's group selected, open in the Layers panel.
+  async function psSelectPartInLayersInModal(name) {
+    const g = psPartGroup(name);
+    if (!g) return false;
+    const inner = psShapeLayer(name) || (g.layers && g.layers[0]);
+    if (inner) await kbSelectLayerById(inner.id);          // Photoshop opens the group to show it
+    await kbSelectLayerById(g.id);
+    return true;
+  }
+  async function psSelectPartInLayers(name) {
+    try { await psMod().core.executeAsModal(async function () { await psSelectPartInLayersInModal(name); }, { commandName: "KBImage — select part" }); }
+    catch (e) { traceErr("ps: select " + name + " in Layers", e); }
+  }
+  // The part a layer belongs to: walk up to the child of PARTS. null when it is not in a part.
+  function psPartOfLayer(layer) {
+    let l = layer, guard = 0;
+    while (l && guard++ < 20) {
+      const p = l.parent;
+      if (!p) return null;
+      if (String(p.name) === PS_PARTS_GROUP && !p.parent) return l.layers ? String(l.name) : null;
+      l = p;
+    }
+    return null;
+  }
+  // The pill shows `name` as selected (no click: nothing else runs).
+  function psSetPartPill(name) {
+    const g = $("pills-ps-parts");
+    if (!g) return false;
+    const ps = g.querySelectorAll(".pill");
+    let found = false;
+    for (let i = 0; i < ps.length; i++) { const on = ps[i].getAttribute("data-value") === name; ps[i].classList.toggle("selected", on); if (on) found = true; }
+    return found;
+  }
+  function psOnLayerSelectEvent(ev, desc) {
+    let t = ""; try { t = JSON.stringify((desc && desc._target) || ""); } catch (_) {}
+    if (t.indexOf('"layer"') < 0) return;                                   // a layer select only
+    if (generateInFlight || Date.now() - psPanelLayerSelAt < 1000) return;  // the panel's own
+    if (psLayerSelTimer) clearTimeout(psLayerSelTimer);
+    psLayerSelTimer = setTimeout(function () {
+      psLayerSelTimer = null;
+      let name = null;
+      try { const al = psMod().app.activeDocument.activeLayers; if (al && al.length === 1) name = psPartOfLayer(al[0]); } catch (_) {}
+      if (!name || psPartNames().indexOf(name) < 0) return;                 // not a part: the selected part stays
+      if (readPills("pills-ps-parts", null) === name) return;
+      if (!psSetPartPill(name)) return;
+      try { psPrintRefreshPart(); } catch (_) {}
+      try { trace("ps: " + name + " picked in the Layers panel"); } catch (_) {}
+    }, 150);
+  }
+  function registerLayerSelectListener() {
+    try {
+      const ps = psMod();
+      if (!ps.action || typeof ps.action.addNotificationListener !== "function") return;
+      try { ps.action.addNotificationListener(["select"], psOnLayerSelectEvent); }
+      catch (e1) { ps.action.addNotificationListener([{ event: "select" }], psOnLayerSelectEvent); }
+    } catch (e) { try { console.warn(TAG, "[ps] layer select listener not registered:", e); } catch (_) {} }
+  }
+
+  // Row clicked: that part's pixels become the selection; its group is selected (and
+  // opened) in the Layers panel.
   async function psOnPartPicked(name) {
     if (!name) return;
     const ps = psMod();
@@ -5363,8 +5430,7 @@
     try {
       await ps.core.executeAsModal(async function () {
         if (has) await kbLoadChannel(ch); else { try { await deselectAll(); } catch (_) {} }
-        const sh = psShapeLayer(name);
-        if (sh) await kbSelectLayerById(sh.id);
+        await psSelectPartInLayersInModal(name);
       }, { commandName: "KBImage — show part" });
       setStatus("ok", has ? name + " is selected. Draw a selection, then + Add selection or - Remove selection."
                           : name + " has no pixels yet. Select it by hand, then + Add selection.");
@@ -5973,7 +6039,7 @@
   async function psPrintRefreshPart() {
     const name = readPills("pills-ps-parts", null);
     const lbl = $("ps-print-part");
-    if (lbl) lbl.textContent = name || "none — pick one in step 6";
+    if (lbl) lbl.textContent = name || "none (pick one in step 6)";
     const ov = $("ps-part-scale"), ang = $("ps-part-angle"), gr = $("ps-print-rot");
     let st = null;
     try { st = await psStateLoad(); } catch (_) {}
@@ -6365,6 +6431,7 @@
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
       const mm = !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;   // kept at once: the newest MERGED is redone
+      await psSelectPartInLayers(name);                                     // the part stays selected in Layers
       setStatus("ok", name + ": " + (reset ? "back to the whole-garment angle" : d ? "turned " + (d > 0 ? "clockwise " : "counterclockwise ") + Math.abs(d) + "° (part angle " + psDegText(pst.nudge) + ")"
         : (pst.scale == null ? "uses the garment scale" : "scale " + pst.scale + "%")) + "."
         + (inDoc ? "" : " Saved in the plug-in folder only.") + (mm ? " " + mm : ""));
@@ -8965,6 +9032,7 @@
     } catch (_) { currentSessionDocId = undefined; }
     registerDocChangeListener();
     registerSelectionListener();   // "Your selection isn't saved to the garment" note
+    registerLayerSelectListener(); // a part picked in the Layers panel becomes the selected part
     falTimesLoad().catch(function () {});   // typical render times for the progress bar
     updateDocInfo();
     psCustomLoad().catch(function (e) { try { console.warn(TAG, "saved garment types not loaded:", e); } catch (_) {} });

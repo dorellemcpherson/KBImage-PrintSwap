@@ -269,6 +269,9 @@ body {
 .ps-print-thumb .ps-cost { margin-top: 4px; white-space: pre-line; }
 .ps-divider { height: 0; border-top: 1px solid var(--line); margin-top: 12px; margin-bottom: 4px; }
 .ps-angle { color: var(--text); }
+.ps-group-head { font-size: 11px; line-height: 14px; font-weight: 600; color: var(--text); letter-spacing: 0.5px; }
+.ps-row-label { flex: 0 0 auto; width: 88px; font-size: 11px; color: var(--dim); }
+#ps-step-body-7 .btn-row > .ps-cost + .ps-cost { margin-left: 8px; }   /* file types, then the print name */
 .ps-step-body { padding: 10px var(--pad) 12px; border-top: 1px solid var(--line); }
 .ps-step-body > * + * { margin-top: 8px; }
 .ps-cost { font-size: 11px; line-height: 14px; color: var(--dim); }
@@ -918,6 +921,7 @@ code {
         <div id="ps-step-body-7" class="ps-step-body hidden">
           <div class="btn-row">
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-choose-print">Choose print</div>
+            <span class="ps-cost">PNG, JPG, TIF</span>
             <span id="ps-print-name" class="ps-cost">No print chosen</span>
           </div>
           <div id="ps-print-thumb" class="ps-print-thumb hidden">
@@ -930,43 +934,38 @@ code {
           </div>
           <div class="ps-cost">Photoshop · free</div>
           <div id="ps-recall-anchor-7" class="ps-recall-anchor"></div>
-          <div class="field">
-            <span class="field-label">Scale % (whole garment)</span>
+          <div class="field-label">Selected part: <span id="ps-print-part">none (pick one in step 6)</span></div>
+          <div class="ps-group-head">SCALE</div>
+          <div class="key-row">
+            <span class="ps-row-label">Whole garment</span>
             <input id="ps-print-scale" class="input" type="text" value="100" autocomplete="off" spellcheck="false" />
           </div>
-          <div class="field">
-            <span class="field-label">Rotate print (whole garment) · <span id="ps-print-rot" class="ps-angle">Angle: 0°</span></span>
-            <div class="btn-row">
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-deg="-15" title="Rotate counterclockwise 15°">↺ 15°</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-deg="-1" title="Rotate counterclockwise 1°">↺ 1°</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-deg="1" title="Rotate clockwise 1°">↻ 1°</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-deg="15" title="Rotate clockwise 15°">↻ 15°</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-set="0" title="Back to 0°">0°</div>
-            </div>
-            <div class="key-row">
-              <input id="ps-print-rot-exact" class="input" type="text" value="" placeholder="Exact angle, e.g. -7.5" autocomplete="off" spellcheck="false" />
-              <div class="btn-ghost" role="button" tabindex="0" data-action="ps-print-rotate" data-set="field">Apply</div>
-            </div>
+          <div class="key-row">
+            <span class="ps-row-label">This part</span>
+            <input id="ps-part-scale" class="input" type="text" value="" placeholder="empty = garment" autocomplete="off" spellcheck="false" />
+            <div class="btn-ghost" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="0">Apply</div>
           </div>
           <div class="ps-divider"></div>
-          <div class="field-label">Selected part: <span id="ps-print-part">none — pick one in step 6</span></div>
-          <div class="field">
-            <span class="field-label">Rotate print in this part · <span id="ps-part-angle" class="ps-angle">Angle: 0°</span></span>
-            <div class="btn-row">
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="-15" title="Rotate counterclockwise 15°">↺ 15°</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="-1" title="Rotate counterclockwise 1°">↺ 1°</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="1" title="Rotate clockwise 1°">↻ 1°</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="15" title="Rotate clockwise 15°">↻ 15°</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-reset="1" title="Back to the whole-garment angle">0°</div>
-            </div>
+          <div class="ps-group-head">ROTATE</div>
+          <div class="field-label">Whole garment · <span id="ps-print-rot" class="ps-angle">Angle: 0°</span></div>
+          <div class="btn-row">
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-deg="-15" title="Rotate counterclockwise 15°">↺ 15°</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-deg="-1" title="Rotate counterclockwise 1°">↺ 1°</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-deg="1" title="Rotate clockwise 1°">↻ 1°</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-deg="15" title="Rotate clockwise 15°">↻ 15°</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-set="0" title="Back to 0°">0°</div>
           </div>
-          <div class="ps-divider"></div>
-          <div class="field">
-            <span class="field-label">Scale % for this part (empty = garment)</span>
-            <div class="key-row">
-              <input id="ps-part-scale" class="input" type="text" value="" autocomplete="off" spellcheck="false" />
-              <div class="btn-ghost" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="0">Apply</div>
-            </div>
+          <div class="key-row">
+            <input id="ps-print-rot-exact" class="input" type="text" value="" placeholder="Exact angle, e.g. -7.5" autocomplete="off" spellcheck="false" />
+            <div class="btn-ghost" role="button" tabindex="0" data-action="ps-print-rotate" data-set="field">Apply</div>
+          </div>
+          <div class="field-label">This part · <span id="ps-part-angle" class="ps-angle">Angle: 0°</span></div>
+          <div class="btn-row">
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="-15" title="Rotate counterclockwise 15°">↺ 15°</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="-1" title="Rotate counterclockwise 1°">↺ 1°</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="1" title="Rotate clockwise 1°">↻ 1°</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="15" title="Rotate clockwise 15°">↻ 15°</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-reset="1" title="Back to the whole-garment angle">0°</div>
           </div>
         </div>
       </div>
