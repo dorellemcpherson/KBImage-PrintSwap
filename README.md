@@ -2,7 +2,7 @@
 
 A Photoshop panel that swaps the print on a garment photo for the retouching team. It builds the same layers, in the same order and with the same names, as the team's print swap file, and uses AI only where it saves time. Every step is checked and accepted by the retoucher before the next one runs.
 
-![KBImage Print Swap panel](docs/screenshots/01-panel-overview.png)
+![KBImage Print Swap: the finished swap with the panel](docs/screenshots/15-step9-finish.png)
 
 **Version** 0.19.0 · **Plug-in id** `com.komar.kbimage.printswap` · **Photoshop** 2022 (23.3) or newer
 
@@ -16,6 +16,18 @@ A Photoshop panel that swaps the print on a garment photo for the retouching tea
 ## The 9 steps
 
 Background · Garment · Remove print · Trims · Gray · Parts · Print · Shading · Finish
+
+| Step | Screenshot |
+|---|---|
+| 1 Background | <img src="docs/screenshots/05-step1-background.png" width="420" alt="Step 1 Background"> |
+| 2 Garment | <img src="docs/screenshots/06-step2-garment.png" width="420" alt="Step 2 Garment"> |
+| 3 Remove print | <img src="docs/screenshots/08-step3-clean.png" width="420" alt="Step 3 Remove print"> |
+| 4 Trims | <img src="docs/screenshots/09-step4-trims.png" width="420" alt="Step 4 Trims"> |
+| 5 Gray | <img src="docs/screenshots/10-step5-gray.png" width="420" alt="Step 5 Gray"> |
+| 6 Parts | <img src="docs/screenshots/11-step6-parts.png" width="420" alt="Step 6 Parts"> |
+| 9 Finish: Layers panel | <img src="docs/screenshots/16-layers-final.png" width="420" alt="Step 9 Finish: Layers panel"> |
+
+Screenshots of steps 7 (Print) and 8 (Shading) are still to come; the full walkthrough is in the [user guide](docs/user-guide.md).
 
 ## AI used (all through one Fal key)
 

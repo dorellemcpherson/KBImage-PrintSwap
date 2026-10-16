@@ -2,7 +2,7 @@
 
 How to install the panel and swap a print, step by step. For the rules and what to check before each Accept, see [Rules and best practices](print-swap-guide.md). Garment types and part names are in [parts-list.md](parts-list.md).
 
-Screenshots are marked like this: 📷 `00-name.png`. They live in `docs/screenshots/`.
+Screenshots live in `docs/screenshots/`. Ones still to be taken are marked like this: 📷 `00-name.png`.
 
 ---
 
@@ -86,7 +86,7 @@ Settings: **Lighten opacity (%)**, **Edge softness**, **Refine in Photoshop**.
 
 Hair is saved as a channel, **KBPS hair**. The HAIR layer is built in step 9.
 
-📷 `05-step1-background.png`
+![Step 1 Background](screenshots/05-step1-background.png)
 
 ### Step 2 · Garment
 
@@ -105,7 +105,7 @@ If the panel says "Your selection isn't saved to the garment", use one of these 
 
 Settings: **Grow into old-garment fringe (px)**, **Edge softness**, **Refine in Photoshop**.
 
-📷 `06-step2-garment.png`
+![Step 2 Garment](screenshots/06-step2-garment.png)
 
 #### 5a. Other: a garment type that is not on the list
 
@@ -124,7 +124,7 @@ Settings: **Grow into old-garment fringe (px)**, **Edge softness**, **Refine in 
 2. Check at 100%: same shape, folds, seams and shadows. Lace and buttons still look like lace and buttons, in their own color.
 3. Anything redrawn? Click **Re-run**. Otherwise **Accept**.
 
-📷 `08-step3-clean.png`
+![Step 3 Remove print (CLEAN)](screenshots/08-step3-clean.png)
 
 ### Step 4 · Trims
 
@@ -146,7 +146,7 @@ Other trims of the type (lace, drawcord, bow, zipper) work the same way.
 
 Settings and **Colors**: Tolerance, Edge margin, Button fit (Tight, Normal, Loose), Shrink button mask, Edge softness, **Piping color** (hex) and **Buttons** (Hue, Saturation, Lightness) to recolor trims.
 
-📷 `09-step4-trims.png`
+![Step 4 Trims](screenshots/09-step4-trims.png)
 
 ### Step 5 · Gray
 
@@ -155,7 +155,7 @@ Settings and **Colors**: Tolerance, Edge margin, Button fit (Tight, Normal, Loos
 
 Settings: **Target gray**.
 
-📷 `10-step5-gray.png`
+![Step 5 Gray](screenshots/10-step5-gray.png)
 
 ### Step 6 · Parts
 
@@ -166,7 +166,7 @@ Settings: **Target gray**.
 
 Settings: **Edge softness**, **Apply to part**, **Refine in Photoshop**.
 
-📷 `11-step6-parts.png`
+![Step 6 Parts](screenshots/11-step6-parts.png)
 
 ### Step 7 · Print
 
@@ -196,7 +196,9 @@ Settings: Brightness 7, Contrast 19, Exposure 0.10, Offset -0.0026, Gamma 0.96, 
 1. Click **Finish**. The lighten layer is hidden, **MERGED** is stamped on top, and **HAIR** goes over it.
 2. Check the whole image at 100%. Click **Accept**. Save the PSD.
 
-📷 `15-step9-finish.png` · 📷 `16-layers-final.png` (the Layers panel after Finish)
+![Step 9 Finish](screenshots/15-step9-finish.png)
+
+![Layers panel after Finish](screenshots/16-layers-final.png)
 
 **Swapping again after Finish:** while the new print is waiting for Accept, MERGED is hidden so you can see it. On **Accept** a new MERGED is built. The one before stays below it, hidden, so you can compare. Only the 2 newest are kept.
 
