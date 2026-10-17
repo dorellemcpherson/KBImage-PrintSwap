@@ -9,7 +9,7 @@ The steps can only be as good as the files that go in.
 **The photo**
 * Use the full-size original from the shoot, never a web or marketplace JPG.
 * Long edge 4000 px or more is best. 3000 to 3999 px works, but fine detail softens. Under 3000 px results will look soft and pasted on.
-* If only a small file exists, upscale the photo (for example with Photoshop's Generative Upscale) **before step 1**, not at the end.
+* If only a small file exists, upscale it in **step 0 (Upscale)** before step 1, never at the end.
 * One garment, shot front, back or side, on a plain background.
 
 **The print**
@@ -38,11 +38,11 @@ The steps can only be as good as the files that go in.
 | 1 Background | Pick White (default) or Lighten. Tick Hair if hair falls over the garment (see 3b). | Background is clean white; the model edge is not cut into. |
 | 2 Garment | Pick the garment type, then Find garment. Fix the selection with the step 2 buttons (see 3a). Hands over the garment are taken out (see 3e). | The whole garment is selected, nothing else (skin, hands, hair, background). |
 | 3 Remove print | Run Remove old print. | The garment shape, folds, seams and shadows are the same as the original. Lace and buttons are still lace and buttons, in their own color. If anything was redrawn, Re-run. |
-| 4 Trims | Check Colored / Neutral piping (picked for you, see 3f), then find piping, buttons, lace and other trims for this type. | Every trim is found and masked closely, and no skin is in KBPS piping. Fix edges with a brush on the mask. |
+| 4 Trims | Check Colored / Neutral piping (picked for you, see 3f), then find piping, buttons, lace and other trims for this type. Trim colors are set in step 7. | Every trim is found and masked closely, and no skin is in KBPS piping. Fix edges with a brush on the mask. |
 | 5 Gray | Run to build the gray base. | Even gray, folds still visible, no old print showing through. |
-| 6 Parts | Uncheck any part this garment does not have, then Find parts. | Each part has its own layer and mask. Parts sit below the trim groups. |
-| 7 Print | Choose the print file and place it. | Print is at the right scale, sharp, and runs the right way on each part. |
-| 8 Shading | Run to bring the folds and shadows back over the print. | The print follows the folds and does not look flat or pasted on. |
+| 6 Parts | Uncheck any part this garment does not have, then Find parts. Parts not in the photo move to "In this style, not in this photo"; **+ Add** brings one back. | Each part found has its own group and mask (no empty groups); coverage 100%, no hairlines between parts. Parts sit below the trim groups. |
+| 7 Print and Color | Choose the print file and place it; set the trim colors. Keep **Continuous** on for all-over and ditsy prints (one fabric across all parts). | Print is at the right scale, sharp, and runs the right way on each part. With Continuous on, the pattern does not break at seams, the pocket or the placket. |
+| 8 Shading | The garment → print pair (Light / Dark each) fills Fold contrast, Fold smoothing, Highlights and Shading strength; change any of them. Run to bring the folds and shadows back over the print. | The print keeps its colors, follows the folds and does not look flat, dark or pasted on. The status line says "Shading built: 1 veil". |
 | 9 Finish | Run the final clean up and stamp. | Check the whole image at 100%. MERGED matches what is below it. |
 
 
@@ -74,7 +74,7 @@ When Hair is ticked in step 1, the hair is saved as a channel called **KBPS hair
 ## 3c. Redo, Start over and getting unstuck
 
 * **Redo** (on a done step): deletes that step and every step after it, then sets that step back to ready. Your earlier steps stay.
-* **Start over** (top of the steps): deletes every Print Swap layer, group and channel and keeps only Background.
+* **Start over** (top of the steps): deletes every Print Swap layer, group and channel and keeps only Background and UPSCALE (step 0 then offers Keep and continue, Upscale again or Remove upscale).
 * **Delete layers with the panel, not by hand.** If you delete a preview layer in the Layers panel, the panel can still think a preview is waiting and block the next step.
 * **If the panel is stuck,** use Start over. If that does not work, Remove and Add the plug-in again in UDT, or close and reopen the document.
 * **The garment type belongs to the document.** If a new file shows a type you did not pick, change it before step 3.
@@ -112,7 +112,7 @@ When the model's hands rest on the garment (holding the hem, in front of the top
 Find piping has two ways of looking, shown on the step 4 face above **Find piping**:
 
 * **Colored piping** finds the trim by its color. CLEAN is gray, so color left in it is trim (red, navy, pink piping).
-* **Neutral piping** finds thin lines that are lighter or darker than the fabric around them (white, black or gray piping).
+* **Neutral piping** finds long, thin lines of one direction: lighter than the fabric (white piping on gray) or darker. It compares each pixel only with the garment around it, leaves out a thin ring along the garment's outer edge, and drops short bits, blobs, folds and heather texture. **Light** / **Dark** next to it overrides the automatic pick.
 
 You do not have to choose. The first time you click Find piping, it looks at the thin lines in CLEAN. If they still carry color it starts on **Colored**, and if they are white, gray or black it starts on **Neutral**. The line under the buttons says which it picked ("Auto: Neutral …"). If the pick is wrong, click the other one and Re-run. Your click is kept until you switch to another document.
 
@@ -128,7 +128,7 @@ Skin color in the middle of the garment is left alone, so a pink or peach trim t
 * **Check at 100% zoom** before every Accept. Problems that are invisible at fit to screen show up in print.
 * **Clean masks with a brush** on the layer mask (white adds, black removes). It is faster than re-running.
 * **Re-run costs money; Discard does not.** If a result is wrong, try Re-run once. If it is still wrong, check the input first.
-* **Recolor trims on their own layer** (the trim group's fill or Hue/Saturation layer), never on the photo.
+* **Recolor trims with the Trim colors rows in step 7** (Original · White · Black · Custom…). It adds Trim lightness and Color Fill 1 inside the trim's group, never on the photo, and follows MERGED after Finish.
 * **After any change below MERGED,** hide MERGED or rebuild it, or the change will not show.
 * **Garment not on the list?** Use "Other" in step 2 and build a template (see 3d). Do not pick the closest type; the wrong type protects the wrong trims.
 * **Save the PSD after each accepted step** so you can go back without re-running.

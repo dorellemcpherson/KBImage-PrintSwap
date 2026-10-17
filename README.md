@@ -22,12 +22,12 @@ A Photoshop panel that swaps the print on a garment photo for the retouching tea
 
 1. Install the panel (above).
 2. In Photoshop open **Plugins > KBImage Print Swap**.
-3. Click the gear, paste the **Fal API key**, click **Save**.
-4. Open the garment photo and work through steps 1 to 9, clicking **Accept** after each.
+3. Open the **Settings** tab, paste the **Fal API key**, set an admin PIN, click **Save**.
+4. Open the garment photo and work through steps 0 to 9, clicking **Accept** after each (step 0, Upscale, is optional: **Skip** it for a large photo).
 
 ## The 9 steps
 
-Background · Garment · Remove print · Trims · Gray · Parts · Print · Shading · Finish
+Upscale (optional, step 0) · Background · Garment · Remove print · Trims · Gray · Parts · Print and Color · Shading · Finish
 
 | Step | Screenshot |
 |---|---|
@@ -47,6 +47,7 @@ Screenshots of steps 7 (Print) and 8 (Shading) are still to come; the full walkt
 |---|---|---|
 | SAM 3.1 | Finding the garment, hands, trims and parts | $0.005 per request |
 | Nano Banana Pro | Removing the old print (step 3) | $0.15 per image ($0.30 at 4K) |
+| Topaz (Standard V2) | Upscaling the photo (step 0, optional) | $0.08 per image up to 24 MP out, $0.16 to 48 MP |
 
 A full run on a 4480 × 6720 photo costs about $0.35 to $0.55. Everything else is plain Photoshop.
 

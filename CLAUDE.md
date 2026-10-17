@@ -1,8 +1,9 @@
 # CLAUDE.md — KBImage Print Swap
 
 Photoshop UXP panel (`manifest.json`, `index.html`, `src/app.js`). One view, Print Swap
-(9 steps), plus Settings. All AI goes through Fal with one key: SAM 3.1
-(`fal-ai/sam-3-1/image`) and Nano Banana Pro (`fal-ai/nano-banana-pro/edit`). Read
+(steps 0 to 9; step 0 Upscale is optional), plus Settings. All AI goes through Fal with one key: SAM 3.1
+(`fal-ai/sam-3-1/image`), Nano Banana Pro (`fal-ai/nano-banana-pro/edit`) and Topaz
+(`fal-ai/topaz/upscale/image`, step 0, optional). Read
 `README.md` for what the panel does and `docs/` for the retouchers' guide and part names.
 
 ## Build rules
@@ -47,6 +48,10 @@ Photoshop UXP panel (`manifest.json`, `index.html`, `src/app.js`). One view, Pri
 
 ## Testing
 
+* **Piping detection:** after ANY change to Find piping, run `node tests/neutral_piping_test.js`
+  (synthetic) and `node tests/piping_cases_test.js` (real garments saved with step 4 Settings ›
+  Save piping test case, imported with `node tests/import_piping_cases.js`). All must pass, so
+  fixing one garment cannot break another.
 * Offline: `node tests/garment_types_test.js` and `node tests/placement_test.js` (they read
   the real functions out of `src/app.js`). The `tests/` folder is removed before handover.
 * In Photoshop: after any change to `src/app.js` or `manifest.json`, **Remove the plug-in in
