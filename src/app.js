@@ -2335,7 +2335,8 @@
     if (descriptor && typeof descriptor.onSettle === "function") {
       try { msg = await descriptor.onSettle(state, true); } catch (_) {}
     }
-    setStatus("ok", typeof msg === "string" && msg ? msg : "Accepted — kept in the document.");
+    if (msg && typeof msg === "object" && msg.text) setStatus(msg.kind || "ok", msg.text);
+    else setStatus("ok", typeof msg === "string" && msg ? msg : "Accepted — kept in the document.");
   }
 
   // Discard: drop the preview without a new run. A step with a
@@ -5666,6 +5667,11 @@
   // trims, PARTS, the GREY group) still works; psLayoutFixInModal moves it into PS. Step 6's
   // part groups all live in one PARTS folder in PS, under PB and SDW; the preview is built in it.
   const PS_PS_GROUP = "PS", PS_PB_GROUP = "PB", PS_SDW_GROUP = "SDW", PS_BACKUP_GROUP = "Backup";
+  const KB_BACKUP_TMP = "kb_backup_tmp";                     // the placeholder a new Backup is made around
+  // "PRINT source · <file>" and "PRINT tiled · <file>": the Backup layers. Never a part, never
+  // in PARTS, ignored by every parts lookup.
+  function psIsBackupPrint(n) { return /^PRINT (source|tiled)( |$)/.test(String(n)); }
+  function psBackupPrints() { return kbFindLayers("PRINT ").filter(function (l) { let g = null; try { g = l.layers; } catch (_) {} return !g && psIsBackupPrint(l.name); }); }
   // A part group is a group whose name is a part name (every garment type's, plus parts added
   // for Other). Anything else in PS (PB, SDW, Backup, PARTS, a trim group that ended up in PS
   // by mistake, the retoucher's own groups) is never a part: never deleted, moved or read as one.
@@ -5715,7 +5721,7 @@
   // The part groups in PS (or in a PARTS group): groups named as a part, top → bottom.
   function psPsParts(p) {
     const out = [], set = psPartNameSet();
-    try { for (let i = 0; i < p.layers.length; i++) { const l = p.layers[i]; if (l.layers && set[String(l.name)]) out.push(l); } } catch (_) {}
+    try { for (let i = 0; i < p.layers.length; i++) { const l = p.layers[i]; if (l.layers && set[String(l.name)] && !psIsBackupPrint(l.name)) out.push(l); } } catch (_) {}
     return out;
   }
   // A trim group (or BUTTON THREAD) by name: in PB, else at the top level (older files).
@@ -6039,10 +6045,12 @@
     try { psToneFaceSync(); } catch (_) {}
     psTrimColors = {}; psTrimLink = false; psTrimColorDocId = id;   // trim colors and the BUTTON link are the document's (below)
     psPartScaleTyped = null;                                // a This part scale typed on another document
+    try { psBackupNote(""); } catch (_) {}                  // "Backup not made" was the other document's
     psGtypeRender();
     if (id == null) return;
     setTimeout(function () { psShadeTidy(id).catch(function () {}); }, 400);   // extra veils from older runs
     setTimeout(function () { psPbTidy(id).catch(function () {}); }, 600);      // trims nested in another trim group
+    setTimeout(function () { psBackupTidy(id).catch(function () {}); }, 800);  // PRINT source / tiled outside Backup
     // Read from THIS document's own metadata only. The plug-in's fallback file is keyed
     // by document title, so a type from another document with the same name never
     // comes back; a new document starts with no type.
@@ -6053,6 +6061,7 @@
       if (psGtypeDocId !== id || now !== id) return;
       if (got && (got.upscale === "done" || got.upscale === "skipped" || got.upscale === "kept")) { psUpDoc = { docId: id, v: got.upscale, info: got.upInfo || null }; try { psStepsRefresh(); } catch (_) {} }
       if (got) { try { psGrayFromDocState(id, got); } catch (_) {} }
+      if (got && got.piping) { try { psPipingStateApply(got.piping); } catch (e) { traceErr("ps piping: settings from the document", e); } }
       if (got && (got.trimColors || got.trimLink) && psTrimColorDocId === id) { psTrimColors = Object.assign({}, got.trimColors || {}); psTrimLink = !!got.trimLink; try { psTrimColorRender(); } catch (_) {} }
       if (got && Array.isArray(got.stale) && psStaleDocId === id) {
         psStaleSteps = got.stale.filter(function (n) { return n >= 3 && n <= PS_STEP_COUNT; });
@@ -6084,7 +6093,7 @@
     if (!f) return null;
     const s = JSON.parse(f.json);
     return s ? { id: s.gtype || null, def: s.gtypeDef || null, stale: s.garmentStale || [], upscale: s.upscale || null, upInfo: s.upInfo || null, gray: s.gray || null, grayMade: s.grayMade || null,
-      trimColors: s.trimColors || null } : null;
+      trimColors: s.trimColors || null, piping: s.piping || null } : null;
   }
   async function psGtypeSave(id) {
     try {
@@ -7636,8 +7645,14 @@
         paramsProvider: params, execute: executePsPrint,
         onSettle: async function (state, accepted) {           // Accept: the Backup group follows this print
           if (!accepted) return null;
+          psBackupNote("");
           try { await psBackupUpdate(); }
-          catch (e) { traceErr("ps backup", e); return "Accepted, but the Backup group could not be updated (" + ((e && e.message) || String(e)) + ")."; }
+          catch (e) {                                          // the print stays accepted; the reason shows in red
+            traceErr("ps backup", e);
+            const m = "Backup not made: " + String((e && e.message) || e).replace(/[.\s]+$/, "") + ".";
+            psBackupNote(m);
+            return { kind: "bad", text: "Print accepted. " + m };
+          } finally { await traceFlush(); }
           return null;
         },
       });
@@ -7656,20 +7671,68 @@
     }
   }
 
-  // Backup (hidden, at the bottom of PS, under the part groups), made again on every accepted
-  // Apply print: "PRINT source · <file>" (the print file placed as a smart object at 100%,
-  // its own pixels, untouched) and "PRINT tiled · <file>" (one layer over the garment's box at
-  // the whole-garment scale and angle on the shared grid, as Continuous tiles it, so a part
-  // patched from it lines up). Hidden, so MERGED never takes it.
+  // Backup (hidden, at the bottom of PS, under PARTS), made again on every accepted Apply
+  // print: "PRINT source · <file>" (the print file placed as a smart object at 100%, its own
+  // pixels, untouched) and "PRINT tiled · <file>" (one layer over the garment's box at the
+  // whole-garment scale and angle on the shared grid, as Continuous tiles it, so a part patched
+  // from it lines up). Safe order, so nothing is ever visible: the old Backup and any stray
+  // PRINT source / tiled go; an empty Backup is made at the bottom of PS and hidden; then a
+  // layer INSIDE it is selected and each file placed there. If any part fails, every layer this
+  // run made is deleted (unlocked first) and the reason thrown. Hidden, so MERGED never takes it.
+  function psBackupNote(text) {
+    const el = $("ps-backup-note");
+    if (!el) return;
+    el.textContent = text || "";
+    el.classList.toggle("hidden", !text);
+  }
+  function psAllLayerIds() {
+    const out = {};
+    const walk = function (list) { try { for (let i = 0; i < list.length; i++) { out[list[i].id] = 1; let k = null; try { k = list[i].layers; } catch (_) {} if (k) walk(k); } } catch (_) {} };
+    try { walk(psMod().app.activeDocument.layers); } catch (_) {}
+    return out;
+  }
+  function psParentId(l) { let p = null; try { p = l && l.parent; } catch (_) {} return p ? p.id : null; }
+  // Inside executeAsModal: a new, empty, hidden Backup at the bottom of PS (never inside
+  // PARTS), made around one empty placeholder layer, which is returned to select: a file
+  // placed with it selected lands inside Backup. Returns { gid, tmpId }.
+  async function psBackupMakeInModal() {
+    const ps = psMod(), EP = ps.constants.ElementPlacement, P = psPsGroup();
+    if (!P) throw new Error("there is no " + PS_PS_GROUP + " group");
+    try {
+      await ps.action.batchPlay([{ _obj: "selectNoLayers", _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
+        _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
+    } catch (_) {}
+    try { await selectRGBChannel(); } catch (_) {}
+    try {
+      await ps.action.batchPlay([{ _obj: "make", _target: [{ _ref: "layer" }], using: { _obj: "layer", name: KB_BACKUP_TMP },
+        _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
+    } catch (e) { throw new Error("making the empty layer for " + PS_BACKUP_GROUP + " failed (Photoshop said: " + ((e && e.message) || String(e)) + ")"); }
+    const tmpId = kbActiveLayerId(), tmp = tmpId != null ? kbLayerById(tmpId) : null;
+    if (!tmp || String(tmp.name) !== KB_BACKUP_TMP) throw new Error("the empty layer for " + PS_BACKUP_GROUP + " was not made");
+    try { tmp.visible = false; } catch (_) {}
+    if (psParentId(tmp) !== P.id) tmp.move(P, EP.PLACEINSIDE);
+    const last = P.layers[P.layers.length - 1];
+    if (last && last.id !== tmpId) kbPlaceAfterInModal(tmp, last);   // the bottom of PS: under PARTS, not in it
+    const gid = await psGroupInModal([tmpId], PS_BACKUP_GROUP);
+    const g = gid != null ? kbLayerById(gid) : null;
+    if (!g || String(g.name) !== PS_BACKUP_GROUP) throw new Error("the " + PS_BACKUP_GROUP + " group was not made");
+    try { g.visible = false; } catch (_) {}
+    psPassThrough(g);
+    const P2 = psPsGroup(), bottom = P2 && P2.layers[P2.layers.length - 1];
+    if (psParentId(g) !== P.id || !bottom || bottom.id !== gid) throw new Error("the " + PS_BACKUP_GROUP + " group did not land at the bottom of " + PS_PS_GROUP);
+    if (psParentId(kbLayerById(tmpId)) !== gid) throw new Error("the empty layer is not in " + PS_BACKUP_GROUP);
+    return { gid: gid, tmpId: tmpId };
+  }
   async function psBackupUpdate() {
-    const P = psPsGroup(), parts = psPartGroupsAll();
-    if (!P || !parts.length || !psPrint) return null;
-    const ps = psMod(), EP = ps.constants.ElementPlacement;
+    if (!psPsGroup()) throw new Error("there is no " + PS_PS_GROUP + " group");
+    if (!psPartGroupsAll().length) throw new Error("there are no part groups in " + PS_PARTS_GROUP);
+    if (!psPrint) throw new Error("the print file is not known since a panel reload (pick it again with Swap print)");
+    const ps = psMod();
     const name = psPrint.name;
     const tex = await psPrintTexture();
     const state = await psStateLoad();
     const gb = await psGarmentBox(0), r = gb.rect, bw = r.right - r.left, bh = r.bottom - r.top;
-    if (bw * bh > 64 * 1000 * 1000) throw new Error("the garment is very large (" + bw + " × " + bh + " px).");
+    if (bw * bh > 64 * 1000 * 1000) throw new Error("the garment is very large (" + bw + " × " + bh + " px)");
     const scale = state.scalePct || 100, rot = Number(state.rotDeg) || 0;
     const tileW = Math.max(2, Math.round(tex.layerW * scale / 100)), tileH = Math.max(2, Math.round(tex.layerH * scale / 100));
     const buf = kbComposeTile(bw, bh, r.left, r.top, tex.data, tex.width, tex.height, tex.components, tileW, tileH, rot, tileW / 2, tileH / 2, null);
@@ -7682,47 +7745,124 @@
     let gid = null;
     try {
       await ps.core.executeAsModal(async function () {
-        const old = psBackupGroup();
-        if (old) { await kbUnlockTreeInModal(old); await psDeleteLayerInModal(old.id); }   // a swap replaces both
-        const fo = psPartsFolder(), bottom = fo && fo.parent && fo.parent.id === psPsGroup().id ? fo : psPsParts(psPsGroup()).slice(-1)[0];   // under PARTS
-        try { await deselectAll(); } catch (_) {}
-        await kbSelectLayerById(bottom.id);
-        try { await selectRGBChannel(); } catch (_) {}
-        // the source: placed, kept a smart object, set back to 100% if Photoshop scaled it
-        await ps.action.batchPlay([{ _obj: "placeEvent", target: { _path: srcTok },
-          freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
-          offset: { _obj: "offset", horizontal: { _unit: "pixelsUnit", _value: 0 }, vertical: { _unit: "pixelsUnit", _value: 0 } },
-          _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
-        const src = ps.app.activeDocument.activeLayers[0];
-        if (!src) throw new Error("the print file did not place.");
-        try { await renameActiveLayer("PRINT source · " + name); } catch (_) {}
+        let step = "removing the old " + PS_BACKUP_GROUP;
+        const old = psBackupGroup();                       // a swap replaces both
+        if (old) { const f = await kbDeleteLayerSafeInModal(old.id); if (f) throw new Error("the old " + PS_BACKUP_GROUP + " could not be removed (" + f.why + ")"); }
+        const strays = psBackupPrints();                   // left by an older run: the newest pair replaces them
+        for (let i = 0; i < strays.length; i++) { const f = await kbDeleteLayerSafeInModal(strays[i].id); if (f) throw new Error(f.name + " could not be removed (" + f.why + ")"); }
+        const before = psAllLayerIds();
         try {
-          const b = src.bounds, cw = Number(b.right) - Number(b.left), ch = Number(b.bottom) - Number(b.top);
-          if (cw > 0 && ch > 0 && (Math.abs(cw - tex.layerW) > 0.5 || Math.abs(ch - tex.layerH) > 0.5)) {
-            await ps.action.batchPlay([{ _obj: "transform", _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
-              freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
-              width: { _unit: "percentUnit", _value: tex.layerW / cw * 100 }, height: { _unit: "percentUnit", _value: tex.layerH / ch * 100 },
-              _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
-          }
-        } catch (e) { traceErr("ps backup: source at 100%", e); }
-        const srcId = src.id;
-        kbPlaceAfterInModal(src, bottom);
-        // the tiled copy over the garment's box
-        await kbSelectLayerById(srcId);
-        const tId = await kbPlaceFileInModal(file, "PRINT tiled · " + name, r);
-        const t = kbLayerById(tId);
-        if (t) kbPlaceAfterInModal(t, kbLayerById(srcId));
-        gid = await psGroupInModal([srcId, tId], PS_BACKUP_GROUP);
-        const g = kbLayerById(gid);
-        if (g) {
-          const P2 = psPsGroup(), last = P2.layers[P2.layers.length - 1];
-          if (last.id !== g.id) kbPlaceAfterInModal(g, last);  // under the part groups
+          step = "making the empty " + PS_BACKUP_GROUP + " group";
+          const mk = await psBackupMakeInModal();
+          gid = mk.gid;
+          const inBk = function (id, what) {
+            const l = id != null ? kbLayerById(id) : null;
+            if (!l) throw new Error(what + " did not appear");
+            if (psParentId(l) !== gid) throw new Error(what + " did not land in " + PS_BACKUP_GROUP);
+            return l;
+          };
+          // the source: placed inside Backup, kept a smart object, set back to 100% if Photoshop scaled it
+          step = "placing PRINT source";
+          try { await deselectAll(); } catch (_) {}
+          await kbSelectLayerById(mk.tmpId);
+          try { await selectRGBChannel(); } catch (_) {}
+          if (kbActiveLayerId() !== mk.tmpId) throw new Error("the layer inside " + PS_BACKUP_GROUP + " could not be selected");
+          await ps.action.batchPlay([{ _obj: "placeEvent", target: { _path: srcTok },
+            freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
+            offset: { _obj: "offset", horizontal: { _unit: "pixelsUnit", _value: 0 }, vertical: { _unit: "pixelsUnit", _value: 0 } },
+            _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
+          const srcId = kbActiveLayerId();
+          if (srcId == null || srcId === mk.tmpId || before[srcId]) throw new Error("the print file did not place");
+          const src = inBk(srcId, "PRINT source");
+          try { await renameActiveLayer("PRINT source · " + name); } catch (_) {}
+          if (!psIsBackupPrint(src.name)) { try { src.name = "PRINT source · " + name; } catch (_) {} }
+          try {
+            const b = src.bounds, cw = Number(b.right) - Number(b.left), ch = Number(b.bottom) - Number(b.top);
+            if (cw > 0 && ch > 0 && (Math.abs(cw - tex.layerW) > 0.5 || Math.abs(ch - tex.layerH) > 0.5)) {
+              await ps.action.batchPlay([{ _obj: "transform", _target: [{ _ref: "layer", _id: srcId }],
+                freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
+                width: { _unit: "percentUnit", _value: tex.layerW / cw * 100 }, height: { _unit: "percentUnit", _value: tex.layerH / ch * 100 },
+                _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
+            }
+          } catch (e) { traceErr("ps backup: source at 100%", e); }
+          // the tiled copy over the garment's box, placed with the source selected: inside Backup too
+          step = "placing PRINT tiled";
+          await kbSelectLayerById(srcId);
+          try { await selectRGBChannel(); } catch (_) {}
+          if (kbActiveLayerId() !== srcId) throw new Error("PRINT source could not be selected");
+          const tId = await kbPlaceFileInModal(file, "PRINT tiled · " + name, r);
+          if (tId == null || before[tId]) throw new Error("the tiled print did not place");
+          const t = inBk(tId, "PRINT tiled");
+          if (!psIsBackupPrint(t.name)) { try { t.name = "PRINT tiled · " + name; } catch (_) {} }
+          kbPlaceAfterInModal(t, kbLayerById(srcId));        // source on top, tiled under it
+          step = "removing the empty layer";
+          const f = await kbDeleteLayerSafeInModal(mk.tmpId);
+          if (f) throw new Error("the empty layer could not be removed (" + f.why + ")");
+          step = "checking " + PS_BACKUP_GROUP;
+          const g = kbLayerById(gid), P = psPsGroup();
+          const kids = g ? Array.from(g.layers).map(function (l) { return l.id; }) : [];
+          if (kids.length !== 2 || kids.indexOf(srcId) < 0 || kids.indexOf(tId) < 0) throw new Error(PS_BACKUP_GROUP + " does not hold just PRINT source and PRINT tiled");
           try { g.visible = false; } catch (_) {}
+          if (g.visible !== false) throw new Error(PS_BACKUP_GROUP + " could not be hidden");
+          if (!P || P.layers[P.layers.length - 1].id !== gid) throw new Error(PS_BACKUP_GROUP + " is not at the bottom of " + PS_PS_GROUP);
+        } catch (e) {                                       // nothing stays: every layer this run made goes, unlocked first
+          const now = psAllLayerIds(), made = Object.keys(now).map(Number).filter(function (id) { return !before[id]; });
+          if (gid != null && made.indexOf(gid) >= 0) { made.splice(made.indexOf(gid), 1); made.unshift(gid); }   // the group first: its layers go with it
+          const kept = [];
+          for (let i = 0; i < made.length; i++) { if (!kbLayerById(made[i])) continue; const f = await kbDeleteLayerSafeInModal(made[i]); if (f) kept.push(f.name); }
+          gid = null;
+          trace("ps backup: failed while " + step + "; removed what it made" + (kept.length ? " except " + kept.join(", ") : ""));
+          throw new Error(step + ": " + String((e && e.message) || e).replace(/[.\s]+$/, "")
+            + (kept.length ? ". " + kept.join(", ") + " could not be removed; delete " + (kept.length === 1 ? "it" : "them") + " in Layers" : ""));
         }
       }, { commandName: "KBImage — Backup" });
     } finally { await kbDeleteFile(file); }
-    trace("ps backup: " + name + " (source at 100%, tiled " + bw + "x" + bh + " at " + scale + "%, " + rot + "°), group " + gid);
+    trace("ps backup: " + name + " (source at 100%, tiled " + bw + "x" + bh + " at " + scale + "%, " + rot + "°), group " + gid + ", hidden at the bottom of " + PS_PS_GROUP);
     return gid;
+  }
+  // Inside executeAsModal: any PRINT source / PRINT tiled outside Backup is hidden and moved
+  // into it (Backup made, hidden, at the bottom of PS when missing), and Backup is hidden.
+  // Returns the number of layers moved. dry = only count them.
+  function psBackupStrays() {
+    const bk = psBackupGroup();
+    return psBackupPrints().filter(function (l) { return !bk || psParentId(l) !== bk.id; });
+  }
+  async function psBackupTidyInModal() {
+    const strays = psBackupStrays();
+    let bk = psBackupGroup();
+    if (!strays.length) { if (bk) { try { bk.visible = false; } catch (_) {} } return 0; }
+    strays.forEach(function (l) { try { l.visible = false; } catch (_) {} });   // hidden before anything moves
+    if (!psPsGroup()) return 0;                             // no PS (an older file): hidden where they are
+    const EP = psMod().constants.ElementPlacement;
+    let tmpId = null;
+    if (!bk) { const mk = await psBackupMakeInModal(); bk = kbLayerById(mk.gid); tmpId = mk.tmpId; }
+    try { bk.visible = false; } catch (_) {}
+    for (let i = 0; i < strays.length; i++) {
+      const l = kbLayerById(strays[i].id), first = bk.layers[0];
+      if (!l) continue;
+      if (first) l.move(first, EP.PLACEBEFORE); else l.move(bk, EP.PLACEINSIDE);
+      if (psParentId(kbLayerById(l.id)) !== bk.id) throw new Error(String(l.name) + " did not land in " + PS_BACKUP_GROUP);
+    }
+    if (tmpId != null) await kbDeleteLayerSafeInModal(tmpId);
+    const P = psPsGroup(), last = P.layers[P.layers.length - 1];
+    if (last.id !== bk.id) kbPlaceAfterInModal(bk, last);   // Backup: always at the bottom
+    trace("ps backup: " + strays.length + " PRINT layer(s) moved into " + PS_BACKUP_GROUP + " (hidden): " + strays.map(function (l) { return String(l.name); }).join(", "));
+    return strays.length;
+  }
+  // A document opens: stray PRINT source / tiled into Backup, hidden. Once per document.
+  let psBackupTidyDone = {};
+  async function psBackupTidy(docId) {
+    if (docId == null || psBackupTidyDone[docId] || generateInFlight) return;
+    if (pendingRecall && pendingRecall.descriptor && /^printswap:print/.test(String(pendingRecall.descriptor.op))) return;
+    psBackupTidyDone[docId] = true;
+    if (!psBackupStrays().length) return;
+    generateInFlight = true;
+    try {
+      let n = 0;
+      await psMod().core.executeAsModal(async function () { n = await psBackupTidyInModal(); }, { commandName: "KBImage — Backup" });
+      if (n) setStatus("ok", n + " PRINT layer" + (n === 1 ? " was" : "s were") + " outside " + PS_BACKUP_GROUP + "; moved into " + PS_PS_GROUP + " › " + PS_BACKUP_GROUP + " (hidden).");
+    } catch (e) { traceErr("ps backup tidy", e); setStatus("bad", "Could not move the PRINT layers into " + PS_BACKUP_GROUP + ": " + ((e && e.message) || String(e))); }
+    finally { generateInFlight = false; }
   }
 
   // Whole-garment rotation: ↺ / ↻ by data-deg, data-set="0" back to 0°, data-set="field"
@@ -8715,7 +8855,7 @@
     const g = $("pills-ps-piping-dir");
     if (g) { const p = g.querySelectorAll(".pill"); for (let i = 0; i < p.length; i++) p[i].classList.toggle("selected", p[i].getAttribute("data-value") === dir); }
     const n = $("ps-piping-dir-note");
-    if (n) n.textContent = dir ? "Neutral: " + dir + " lines" + (by === "you" ? " (your pick)" : " (auto)") : "Neutral: light or dark, picked when you click Find piping";
+    if (n) n.textContent = dir ? "Neutral: " + dir + " lines" + (by === "you" ? " (your pick)" : (by === "doc" ? " (saved with this file)" : " (auto)")) : "Neutral: light or dark, picked when you click Find piping";
   }
   function psPipingDirRowSync() { const r = $("ps-piping-dir-row"); if (r) r.classList.toggle("hidden", psPipingMode() !== "neutral"); }
   function psTrimsOnDirChanged() {
@@ -8836,277 +8976,334 @@
       { commandName: "KBImage — show " + chName });
   }
 
-  // Pure: the piping plane (rect-sized, 0 / 255).
-  function psPipingPlane(src, alpha, rw, rh, mode, tolPct) {
-    const N = rw * rh, rgb = src.rgb, out = new Uint8Array(N);
-    if (mode === "colored") {
-      const t = tolPct / 100;
-      for (let k = 0; k < N; k++) {
-        if (alpha[k] <= 127 || !src.valid[k]) continue;
-        const r = rgb[k * 3], g = rgb[k * 3 + 1], b = rgb[k * 3 + 2];
-        const mx = r > g ? (r > b ? r : b) : (g > b ? g : b), mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-        if (mx > 20 && (mx - mn) / mx >= t) out[k] = 255;
+  // =======================================================================
+  // PIPING DETECTION — begin. One self-contained module: pure functions on pixel arrays,
+  // no shared state, nothing from outside (its own copies of the blur / dilate helpers).
+  // Find piping calls it through KBPiping; tests/piping/run.js runs it on the saved piping
+  // cases and checks this block uses nothing from outside it. Changes to layout, parts or
+  // shading never touch it.
+  // =======================================================================
+  const KBPiping = (function () {
+    // Private copies of the general helpers, so a change made for shading or parts never
+    // changes piping.
+    function pipBoxBlur(src, w, h, r) {
+      const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+      for (let y = 0; y < h; y++) {
+        let acc = 0, n = 0;
+        const o = y * w;
+        for (let x = -r; x < w; x++) {
+          const add = x + r, sub = x - r - 1;
+          if (add < w) { acc += src[o + add]; n++; }
+          if (sub >= 0) { acc -= src[o + sub]; n--; }
+          if (x >= 0) tmp[o + x] = acc / n;
+        }
       }
-    } else {
-      const L = new Float32Array(N), A = new Float32Array(N);
-      for (let k = 0; k < N; k++) { L[k] = (rgb[k * 3] * 77 + rgb[k * 3 + 1] * 150 + rgb[k * 3 + 2] * 29) >> 8; A[k] = alpha[k] > 127 ? 1 : 0; }
-      const r = Math.max(3, Math.round(Math.max(rw, rh) * 0.004));
-      const mean = kbBoxBlur(L, rw, rh, r * 3), inside = kbBoxBlur(A, rw, rh, r);          // wide mean: a thin line barely moves it (no halo)
-      const t = tolPct * 2.55, sel = new Float32Array(N);
-      for (let k = 0; k < N; k++) if (inside[k] > 0.98 && src.valid[k] && Math.abs(L[k] - mean[k]) >= t) sel[k] = 1;   // away from the silhouette
-      const wide = kbBoxBlur(sel, rw, rh, r * 2);                                                   // wide dark / light areas are folds, not piping
-      for (let k = 0; k < N; k++) if (sel[k] && wide[k] < 0.6) out[k] = 255;
+      for (let x = 0; x < w; x++) {
+        let acc = 0, n = 0;
+        for (let y = -r; y < h; y++) {
+          const add = y + r, sub = y - r - 1;
+          if (add < h) { acc += tmp[add * w + x]; n++; }
+          if (sub >= 0) { acc -= tmp[sub * w + x]; n--; }
+          if (y >= 0) out[y * w + x] = acc / n;
+        }
+      }
+      return out;
     }
-    // Despeckle: drop pixels with almost no selected neighbours.
-    const f = new Float32Array(N); for (let k = 0; k < N; k++) f[k] = out[k] ? 1 : 0;
-    const nb = kbBoxBlur(f, rw, rh, 1);
-    for (let k = 0; k < N; k++) if (out[k] && nb[k] < 0.34) out[k] = 0;
-    return out;
-  }
+    function pipDilate(b, w, h, r) {
+      const f = new Float32Array(w * h); for (let k = 0; k < f.length; k++) f[k] = b[k] ? 1 : 0;
+      const bl = pipBoxBlur(f, w, h, r), out = new Uint8Array(w * h);
+      for (let k = 0; k < out.length; k++) if (bl[k] > 0.0001) out[k] = 1;
+      return out;
+    }
+    function pipColorRef(rgb, stride, sel, N, valid) {
+      const R0 = [], G0 = [], B0 = [];
+      for (let k = 0; k < N; k++) if (sel[k] && (!valid || valid[k])) { R0.push(rgb[k * stride]); G0.push(rgb[k * stride + 1]); B0.push(rgb[k * stride + 2]); }
+      if (R0.length < 50) return null;
+      const med = function (a) { a.sort(function (x, y) { return x - y; }); return a[a.length >> 1]; };
+      const r = { r: med(R0.slice()), g: med(G0.slice()), b: med(B0.slice()), n: R0.length };
+      const d = [];
+      for (let i = 0; i < R0.length; i++) d.push(Math.hypot(R0[i] - r.r, G0[i] - r.g, B0[i] - r.b));
+      r.tol = Math.min(48, Math.max(24, 2.5 * med(d)));       // a mask's soft edge widens the spread: capped
+      return r;
+    }
 
-  // Pure: NEUTRAL piping as lines of ONE direction (white piping on gray = light lines).
-  //   1. Each pixel is compared with the mean of the GARMENT pixels around it (KBPS garment
-  //      only, never the background), so the cutout edge does not read as contrast.
-  //   2. A thin ring (about 0.1% of the image's long edge) is left out where the garment
-  //      meets the BACKGROUND (outside KBPS garment and outside KBPS person), so the cut-out
-  //      edge is never a line. Where it meets skin, hair or the neckline there is no ring:
-  //      collar, lapel, cuff and hem piping on that edge stays. Without KBPS person every
-  //      edge gets the ring (as before).
-  //   3. Candidates: lighter (or darker) than that mean by the tolerance, minus keepOut
-  //      (KBPS hands, KBPS buttons).
-  //   4. Lines, not specks: each connected piece is measured (length = half its outline,
-  //      width = 2 × area / outline). Kept when long (≥ 2% of the long edge), thin (0.08%
-  //      to 0.6%: a fold ridge only crosses the tolerance along a hairline crest), sharp-
-  //      edged (at half the tolerance it may not spread to more than 1.8 × its area: a
-  //      fold fades out slowly, piping stops at its edge) and not faint (at least half the
-  //      contrast of the strongest long line: heather and folds are weaker than piping).
-  //      In the collar area (the top 20% of the garment box) the minimum length is 40%
-  //      of it: collar piping comes in short curved pieces.
-  //   5. Rescue at the edge: a line touching the ring that runs more than 3% of the
-  //      garment height is kept even when the ring took half its width (width, sharpness
-  //      and faintness are not asked of it), and it is carried on into the ring where the
-  //      ring pixels pass the tolerance within one ring width of it, so it reaches the edge.
-  //      The ring on its own (the cut-out halo) never makes a line.
-  //   opts: { ring, minLen } (px, the retoucher's, else auto), person (rect-sized KBPS person).
-  //   dir "light" | "dark" | "auto" (both are measured; the one with more strong line
-  //   length wins). docLong = the image's long edge (px). → { plane, dir, kept, dropped,
-  //   keptPx, score: { light, dark } }.
-  const PS_NEU = { ring: 0.001, mean: 0.012, minLen: 0.02, minW: 0.0008, maxW: 0.006, spread: 1.8, faint: 0.5, collar: 0.2, collarLen: 0.4, rescue: 0.03 };
-  // The auto Edge ring and Min line length (px) for an image whose long edge is Lg px.
-  function psNeuAuto(Lg) { return { ring: Math.max(2, Math.round(Lg * PS_NEU.ring)), minLen: Math.max(40, Math.round(Lg * PS_NEU.minLen)) }; }
-  function psPipingNeutral(src, alpha, rw, rh, tolPct, dir, docLong, keepOut, opts) {
-    const o = opts || {};
-    const N = rw * rh, rgb = src.rgb, Lg = Math.max(docLong || 0, rw, rh), au = psNeuAuto(Lg);
-    const ring = o.ring != null && o.ring >= 0 ? Math.round(o.ring) : au.ring, R = Math.max(9, Math.round(Lg * PS_NEU.mean));
-    const minLen = o.minLen != null && o.minLen > 0 ? Math.round(o.minLen) : au.minLen, maxW = Math.max(4, Math.round(Lg * PS_NEU.maxW)), minW = Math.max(2, Lg * PS_NEU.minW);
-    const collarY = Math.round(rh * PS_NEU.collar), collarLen = Math.max(12, Math.round(minLen * PS_NEU.collarLen));
-    const L = new Float32Array(N), G = new Float32Array(N), LG = new Float32Array(N), bg = new Uint8Array(N);
-    let gTop = rh, gBot = -1;
-    for (let k = 0; k < N; k++) {
-      const g = alpha[k] > 127 && src.valid[k] ? 1 : 0;
-      L[k] = (rgb[k * 3] * 77 + rgb[k * 3 + 1] * 150 + rgb[k * 3 + 2] * 29) / 256;
-      G[k] = g; LG[k] = L[k] * g;
-      bg[k] = !g && !(o.person && o.person[k] > 127) ? 1 : 0;           // background: not garment, not the person (skin, hair, neck)
-      if (g) { const y = (k / rw) | 0; if (y < gTop) gTop = y; if (y > gBot) gBot = y; }
-    }
-    const rescueLen = Math.max(minLen, Math.round(Math.max(1, gBot - gTop + 1) * PS_NEU.rescue));
-    const nearEdge = ring > 0 ? psDilate(bg, rw, rh, ring) : bg;         // the ring against the background (and the background)
-    const num = kbBoxBlur(LG, rw, rh, R), den = kbBoxBlur(G, rw, rh, R);
-    const Ls = kbBoxBlur(L, rw, rh, 1);                                  // heather noise down for the edge test
-    const d = new Float32Array(N), ds = new Float32Array(N), core = new Uint8Array(N), inRing = new Uint8Array(N);
-    for (let k = 0; k < N; k++) {
-      if (!G[k] || !(den[k] > 0)) continue;
-      const m = num[k] / den[k];
-      d[k] = L[k] - m; ds[k] = Ls[k] - m;
-      if (nearEdge[k]) inRing[k] = 1; else core[k] = 1;
-    }
-    const byRing = psDilate(inRing, rw, rh, 1);                          // core pixels touching the ring
-    const t = tolPct * 2.55;
-    const one = function (sg) {
-      const cand = new Uint8Array(N);
-      for (let k = 0; k < N; k++) if (core[k] && !(keepOut && keepOut[k]) && sg * d[k] >= t) cand[k] = 1;
-      // pieces (8-connected)
-      const lab = new Int32Array(N), stack = new Int32Array(N);
-      const area = [0], perim = [0], con = [0], top = [0], edge = [0];
-      let nl = 0;
-      for (let k0 = 0; k0 < N; k0++) {
-        if (!cand[k0] || lab[k0]) continue;
-        nl++; area.push(0); perim.push(0); con.push(0); top.push(rh); edge.push(0);
-        let sp = 0; stack[sp++] = k0; lab[k0] = nl;
-        while (sp) {
-          const k = stack[--sp], x = k % rw, y = (k - x) / rw;
-          area[nl]++; con[nl] += sg * d[k];
-          if (y < top[nl]) top[nl] = y;
-          if (byRing[k]) edge[nl]++;
-          if (x === 0 || y === 0 || x === rw - 1 || y === rh - 1 || !cand[k - 1] || !cand[k + 1] || !cand[k - rw] || !cand[k + rw]) perim[nl]++;
-          for (let dy = -1; dy <= 1; dy++) {
-            const yy = y + dy; if (yy < 0 || yy >= rh) continue;
-            for (let dx = -1; dx <= 1; dx++) {
-              const xx = x + dx; if (xx < 0 || xx >= rw) continue;
-              const q = yy * rw + xx;
-              if (cand[q] && !lab[q]) { lab[q] = nl; stack[sp++] = q; }
-            }
-          }
-        }
-      }
-      // edge sharpness: the half-tolerance area near each piece (within maxW of it)
-      const near = psDilate(cand, rw, rh, maxW), half = new Uint8Array(N);
-      for (let k = 0; k < N; k++) if (near[k] && core[k] && !(keepOut && keepOut[k]) && sg * ds[k] >= t / 2) half[k] = 1;
-      const hl = new Int32Array(N), hArea = [0], cArea = [0];
-      let nh = 0;
-      for (let k0 = 0; k0 < N; k0++) {
-        if (!half[k0] || hl[k0]) continue;
-        nh++; hArea.push(0); cArea.push(0);
-        let sp = 0; stack[sp++] = k0; hl[k0] = nh;
-        while (sp) {
-          const k = stack[--sp], x = k % rw, y = (k - x) / rw;
-          hArea[nh]++; if (cand[k]) cArea[nh]++;
-          for (let dy = -1; dy <= 1; dy++) {
-            const yy = y + dy; if (yy < 0 || yy >= rh) continue;
-            for (let dx = -1; dx <= 1; dx++) {
-              const xx = x + dx; if (xx < 0 || xx >= rw) continue;
-              const q = yy * rw + xx;
-              if (half[q] && !hl[q]) { hl[q] = nh; stack[sp++] = q; }
-            }
-          }
-        }
-      }
-      const spread = new Float32Array(nl + 1);                         // each piece: its half-area group's ratio
-      for (let k = 0; k < N; k++) if (lab[k] && !spread[lab[k]]) { const h = hl[k]; spread[lab[k]] = h && cArea[h] ? hArea[h] / cArea[h] : 1; }
-      const keep = new Uint8Array(nl + 1);
-      let kept = 0, dropped = 0, keptPx = 0, score = 0, ref = 0;
-      const why = { short: 0, hairline: 0, wide: 0, soft: 0, faint: 0 }, ok = [], rescued = [];
-      for (let i = 1; i <= nl; i++) {
-        const len = perim[i] / 2, wid = 2 * area[i] / Math.max(1, perim[i]);
-        // a line along the edge (touching the ring along much of it), long enough: kept as it is
-        if (edge[i] >= len * 0.3 && len >= rescueLen && wid >= 1) { rescued.push(i); continue; }
-        if (len < (top[i] < collarY ? collarLen : minLen)) { why.short++; dropped++; continue; }
-        if (wid < minW) { why.hairline++; dropped++; continue; }
-        if (wid > maxW) { why.wide++; dropped++; continue; }
-        if (spread[i] > PS_NEU.spread) { why.soft++; dropped++; continue; }
-        const c = con[i] / area[i];
-        ok.push(i);
-        if (len >= minLen * 2 && c > ref) ref = c;                        // the strongest long line
-      }
-      for (let j = 0; j < ok.length; j++) {
-        const i = ok[j], c = con[i] / area[i];
-        if (c < ref * PS_NEU.faint) { why.faint++; dropped++; continue; }
-        keep[i] = 1; kept++; keptPx += area[i]; score += perim[i] / 2 * c;
-      }
-      for (let j = 0; j < rescued.length; j++) { const i = rescued[j]; keep[i] = 1; kept++; keptPx += area[i]; score += perim[i] / 2 * con[i] / area[i]; }
-      const plane = new Uint8Array(N), kp = new Uint8Array(N);
-      for (let k = 0; k < N; k++) if (lab[k] && keep[lab[k]]) { plane[k] = 255; kp[k] = 1; }
-      // kept lines carried on into the ring: straight steps (left, right, up, down) from a
-      // kept pixel through ring pixels that pass the tolerance, at most one ring width, so a
-      // line reaches the edge but never turns a corner onto the cut-out halo
-      let ringPx = 0;
-      if (ring > 0) {
-        const steps = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    // Pure: the piping plane (rect-sized, 0 / 255).
+    function pipPlane(src, alpha, rw, rh, mode, tolPct) {
+      const N = rw * rh, rgb = src.rgb, out = new Uint8Array(N);
+      if (mode === "colored") {
+        const t = tolPct / 100;
         for (let k = 0; k < N; k++) {
-          if (!kp[k] || !byRing[k]) continue;
-          const x0 = k % rw, y0 = (k - x0) / rw;
-          for (let s = 0; s < 4; s++) {
-            for (let j = 1; j <= ring + 1; j++) {
-              const x = x0 + steps[s][0] * j, y = y0 + steps[s][1] * j;
-              if (x < 0 || y < 0 || x >= rw || y >= rh) break;
-              const q = y * rw + x;
-              if (!inRing[q] || (keepOut && keepOut[q]) || sg * d[q] < t) break;
-              if (!plane[q]) { plane[q] = 255; ringPx++; }
+          if (alpha[k] <= 127 || !src.valid[k]) continue;
+          const r = rgb[k * 3], g = rgb[k * 3 + 1], b = rgb[k * 3 + 2];
+          const mx = r > g ? (r > b ? r : b) : (g > b ? g : b), mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+          if (mx > 20 && (mx - mn) / mx >= t) out[k] = 255;
+        }
+      } else {
+        const L = new Float32Array(N), A = new Float32Array(N);
+        for (let k = 0; k < N; k++) { L[k] = (rgb[k * 3] * 77 + rgb[k * 3 + 1] * 150 + rgb[k * 3 + 2] * 29) >> 8; A[k] = alpha[k] > 127 ? 1 : 0; }
+        const r = Math.max(3, Math.round(Math.max(rw, rh) * 0.004));
+        const mean = pipBoxBlur(L, rw, rh, r * 3), inside = pipBoxBlur(A, rw, rh, r);          // wide mean: a thin line barely moves it (no halo)
+        const t = tolPct * 2.55, sel = new Float32Array(N);
+        for (let k = 0; k < N; k++) if (inside[k] > 0.98 && src.valid[k] && Math.abs(L[k] - mean[k]) >= t) sel[k] = 1;   // away from the silhouette
+        const wide = pipBoxBlur(sel, rw, rh, r * 2);                                                   // wide dark / light areas are folds, not piping
+        for (let k = 0; k < N; k++) if (sel[k] && wide[k] < 0.6) out[k] = 255;
+      }
+      // Despeckle: drop pixels with almost no selected neighbours.
+      const f = new Float32Array(N); for (let k = 0; k < N; k++) f[k] = out[k] ? 1 : 0;
+      const nb = pipBoxBlur(f, rw, rh, 1);
+      for (let k = 0; k < N; k++) if (out[k] && nb[k] < 0.34) out[k] = 0;
+      return out;
+    }
+
+    // Pure: NEUTRAL piping as lines of ONE direction (white piping on gray = light lines).
+    //   1. Each pixel is compared with the mean of the GARMENT pixels around it (KBPS garment
+    //      only, never the background), so the cutout edge does not read as contrast.
+    //   2. A thin ring (about 0.1% of the image's long edge) is left out where the garment
+    //      meets the BACKGROUND (outside KBPS garment and outside KBPS person), so the cut-out
+    //      edge is never a line. Where it meets skin, hair or the neckline there is no ring:
+    //      collar, lapel, cuff and hem piping on that edge stays. Without KBPS person every
+    //      edge gets the ring (as before).
+    //   3. Candidates: lighter (or darker) than that mean by the tolerance, minus keepOut
+    //      (KBPS hands, KBPS buttons).
+    //   4. Lines, not specks: each connected piece is measured (length = half its outline,
+    //      width = 2 × area / outline). Kept when long (≥ 2% of the long edge), thin (0.08%
+    //      to 0.6%: a fold ridge only crosses the tolerance along a hairline crest), sharp-
+    //      edged (at half the tolerance it may not spread to more than 1.8 × its area: a
+    //      fold fades out slowly, piping stops at its edge) and not faint (at least half the
+    //      contrast of the strongest long line: heather and folds are weaker than piping).
+    //      In the collar area (the top 20% of the garment box) the minimum length is 40%
+    //      of it: collar piping comes in short curved pieces.
+    //   5. Rescue at the edge: a line touching the ring that runs more than 3% of the
+    //      garment height is kept even when the ring took half its width (width, sharpness
+    //      and faintness are not asked of it), and it is carried on into the ring where the
+    //      ring pixels pass the tolerance within one ring width of it, so it reaches the edge.
+    //      The ring on its own (the cut-out halo) never makes a line.
+    //   opts: { ring, minLen } (px, the retoucher's, else auto), person (rect-sized KBPS person).
+    //   dir "light" | "dark" | "auto" (both are measured; the one with more strong line
+    //   length wins). docLong = the image's long edge (px). → { plane, dir, kept, dropped,
+    //   keptPx, score: { light, dark } }.
+    const PIP_NEU = { ring: 0.001, mean: 0.012, minLen: 0.02, minW: 0.0008, maxW: 0.006, spread: 1.8, faint: 0.5, collar: 0.2, collarLen: 0.4, rescue: 0.03 };
+    // The auto Edge ring and Min line length (px) for an image whose long edge is Lg px.
+    function pipNeuAuto(Lg) { return { ring: Math.max(2, Math.round(Lg * PIP_NEU.ring)), minLen: Math.max(40, Math.round(Lg * PIP_NEU.minLen)) }; }
+    function pipNeutral(src, alpha, rw, rh, tolPct, dir, docLong, keepOut, opts) {
+      const o = opts || {};
+      const N = rw * rh, rgb = src.rgb, Lg = Math.max(docLong || 0, rw, rh), au = pipNeuAuto(Lg);
+      const ring = o.ring != null && o.ring >= 0 ? Math.round(o.ring) : au.ring, R = Math.max(9, Math.round(Lg * PIP_NEU.mean));
+      const minLen = o.minLen != null && o.minLen > 0 ? Math.round(o.minLen) : au.minLen, maxW = Math.max(4, Math.round(Lg * PIP_NEU.maxW)), minW = Math.max(2, Lg * PIP_NEU.minW);
+      const collarY = Math.round(rh * PIP_NEU.collar), collarLen = Math.max(12, Math.round(minLen * PIP_NEU.collarLen));
+      const L = new Float32Array(N), G = new Float32Array(N), LG = new Float32Array(N), bg = new Uint8Array(N);
+      let gTop = rh, gBot = -1;
+      for (let k = 0; k < N; k++) {
+        const g = alpha[k] > 127 && src.valid[k] ? 1 : 0;
+        L[k] = (rgb[k * 3] * 77 + rgb[k * 3 + 1] * 150 + rgb[k * 3 + 2] * 29) / 256;
+        G[k] = g; LG[k] = L[k] * g;
+        bg[k] = !g && !(o.person && o.person[k] > 127) ? 1 : 0;           // background: not garment, not the person (skin, hair, neck)
+        if (g) { const y = (k / rw) | 0; if (y < gTop) gTop = y; if (y > gBot) gBot = y; }
+      }
+      const rescueLen = Math.max(minLen, Math.round(Math.max(1, gBot - gTop + 1) * PIP_NEU.rescue));
+      const nearEdge = ring > 0 ? pipDilate(bg, rw, rh, ring) : bg;         // the ring against the background (and the background)
+      const num = pipBoxBlur(LG, rw, rh, R), den = pipBoxBlur(G, rw, rh, R);
+      const Ls = pipBoxBlur(L, rw, rh, 1);                                  // heather noise down for the edge test
+      const d = new Float32Array(N), ds = new Float32Array(N), core = new Uint8Array(N), inRing = new Uint8Array(N);
+      for (let k = 0; k < N; k++) {
+        if (!G[k] || !(den[k] > 0)) continue;
+        const m = num[k] / den[k];
+        d[k] = L[k] - m; ds[k] = Ls[k] - m;
+        if (nearEdge[k]) inRing[k] = 1; else core[k] = 1;
+      }
+      const byRing = pipDilate(inRing, rw, rh, 1);                          // core pixels touching the ring
+      const t = tolPct * 2.55;
+      const one = function (sg) {
+        const cand = new Uint8Array(N);
+        for (let k = 0; k < N; k++) if (core[k] && !(keepOut && keepOut[k]) && sg * d[k] >= t) cand[k] = 1;
+        // pieces (8-connected)
+        const lab = new Int32Array(N), stack = new Int32Array(N);
+        const area = [0], perim = [0], con = [0], top = [0], edge = [0];
+        let nl = 0;
+        for (let k0 = 0; k0 < N; k0++) {
+          if (!cand[k0] || lab[k0]) continue;
+          nl++; area.push(0); perim.push(0); con.push(0); top.push(rh); edge.push(0);
+          let sp = 0; stack[sp++] = k0; lab[k0] = nl;
+          while (sp) {
+            const k = stack[--sp], x = k % rw, y = (k - x) / rw;
+            area[nl]++; con[nl] += sg * d[k];
+            if (y < top[nl]) top[nl] = y;
+            if (byRing[k]) edge[nl]++;
+            if (x === 0 || y === 0 || x === rw - 1 || y === rh - 1 || !cand[k - 1] || !cand[k + 1] || !cand[k - rw] || !cand[k + rw]) perim[nl]++;
+            for (let dy = -1; dy <= 1; dy++) {
+              const yy = y + dy; if (yy < 0 || yy >= rh) continue;
+              for (let dx = -1; dx <= 1; dx++) {
+                const xx = x + dx; if (xx < 0 || xx >= rw) continue;
+                const q = yy * rw + xx;
+                if (cand[q] && !lab[q]) { lab[q] = nl; stack[sp++] = q; }
+              }
             }
           }
         }
-      }
-      return { plane: plane, kept: kept, dropped: dropped, keptPx: keptPx + ringPx, score: score, why: why, rescued: rescued.length, ringPx: ringPx };
-    };
-    const lt = dir === "dark" ? null : one(1), dk = dir === "light" ? null : one(-1);
-    const pick = dir === "light" ? "light" : (dir === "dark" ? "dark" : (dk.score > lt.score ? "dark" : "light"));
-    const r = pick === "light" ? lt : dk;
-    return { plane: r.plane, dir: pick, kept: r.kept, dropped: r.dropped, keptPx: r.keptPx, why: r.why, rescued: r.rescued, ringPx: r.ringPx,
-      score: { light: lt ? Math.round(lt.score) : null, dark: dk ? Math.round(dk.score) : null },
-      sizes: { ring: ring, mean: R, minLen: minLen, collarLen: collarLen, collarY: collarY, rescueLen: rescueLen, minW: Math.round(minW * 10) / 10, maxW: maxW, person: !!o.person } };
-  }
+        // edge sharpness: the half-tolerance area near each piece (within maxW of it)
+        const near = pipDilate(cand, rw, rh, maxW), half = new Uint8Array(N);
+        for (let k = 0; k < N; k++) if (near[k] && core[k] && !(keepOut && keepOut[k]) && sg * ds[k] >= t / 2) half[k] = 1;
+        const hl = new Int32Array(N), hArea = [0], cArea = [0];
+        let nh = 0;
+        for (let k0 = 0; k0 < N; k0++) {
+          if (!half[k0] || hl[k0]) continue;
+          nh++; hArea.push(0); cArea.push(0);
+          let sp = 0; stack[sp++] = k0; hl[k0] = nh;
+          while (sp) {
+            const k = stack[--sp], x = k % rw, y = (k - x) / rw;
+            hArea[nh]++; if (cand[k]) cArea[nh]++;
+            for (let dy = -1; dy <= 1; dy++) {
+              const yy = y + dy; if (yy < 0 || yy >= rh) continue;
+              for (let dx = -1; dx <= 1; dx++) {
+                const xx = x + dx; if (xx < 0 || xx >= rw) continue;
+                const q = yy * rw + xx;
+                if (half[q] && !hl[q]) { hl[q] = nh; stack[sp++] = q; }
+              }
+            }
+          }
+        }
+        const spread = new Float32Array(nl + 1);                         // each piece: its half-area group's ratio
+        for (let k = 0; k < N; k++) if (lab[k] && !spread[lab[k]]) { const h = hl[k]; spread[lab[k]] = h && cArea[h] ? hArea[h] / cArea[h] : 1; }
+        const keep = new Uint8Array(nl + 1);
+        let kept = 0, dropped = 0, keptPx = 0, score = 0, ref = 0;
+        const why = { short: 0, hairline: 0, wide: 0, soft: 0, faint: 0 }, ok = [], rescued = [];
+        for (let i = 1; i <= nl; i++) {
+          const len = perim[i] / 2, wid = 2 * area[i] / Math.max(1, perim[i]);
+          // a line along the edge (touching the ring along much of it), long enough: kept as it is
+          if (edge[i] >= len * 0.3 && len >= rescueLen && wid >= 1) { rescued.push(i); continue; }
+          if (len < (top[i] < collarY ? collarLen : minLen)) { why.short++; dropped++; continue; }
+          if (wid < minW) { why.hairline++; dropped++; continue; }
+          if (wid > maxW) { why.wide++; dropped++; continue; }
+          if (spread[i] > PIP_NEU.spread) { why.soft++; dropped++; continue; }
+          const c = con[i] / area[i];
+          ok.push(i);
+          if (len >= minLen * 2 && c > ref) ref = c;                        // the strongest long line
+        }
+        for (let j = 0; j < ok.length; j++) {
+          const i = ok[j], c = con[i] / area[i];
+          if (c < ref * PIP_NEU.faint) { why.faint++; dropped++; continue; }
+          keep[i] = 1; kept++; keptPx += area[i]; score += perim[i] / 2 * c;
+        }
+        for (let j = 0; j < rescued.length; j++) { const i = rescued[j]; keep[i] = 1; kept++; keptPx += area[i]; score += perim[i] / 2 * con[i] / area[i]; }
+        const plane = new Uint8Array(N), kp = new Uint8Array(N);
+        for (let k = 0; k < N; k++) if (lab[k] && keep[lab[k]]) { plane[k] = 255; kp[k] = 1; }
+        // kept lines carried on into the ring: straight steps (left, right, up, down) from a
+        // kept pixel through ring pixels that pass the tolerance, at most one ring width, so a
+        // line reaches the edge but never turns a corner onto the cut-out halo
+        let ringPx = 0;
+        if (ring > 0) {
+          const steps = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+          for (let k = 0; k < N; k++) {
+            if (!kp[k] || !byRing[k]) continue;
+            const x0 = k % rw, y0 = (k - x0) / rw;
+            for (let s = 0; s < 4; s++) {
+              for (let j = 1; j <= ring + 1; j++) {
+                const x = x0 + steps[s][0] * j, y = y0 + steps[s][1] * j;
+                if (x < 0 || y < 0 || x >= rw || y >= rh) break;
+                const q = y * rw + x;
+                if (!inRing[q] || (keepOut && keepOut[q]) || sg * d[q] < t) break;
+                if (!plane[q]) { plane[q] = 255; ringPx++; }
+              }
+            }
+          }
+        }
+        return { plane: plane, kept: kept, dropped: dropped, keptPx: keptPx + ringPx, score: score, why: why, rescued: rescued.length, ringPx: ringPx };
+      };
+      const lt = dir === "dark" ? null : one(1), dk = dir === "light" ? null : one(-1);
+      const pick = dir === "light" ? "light" : (dir === "dark" ? "dark" : (dk.score > lt.score ? "dark" : "light"));
+      const r = pick === "light" ? lt : dk;
+      return { plane: r.plane, dir: pick, kept: r.kept, dropped: r.dropped, keptPx: r.keptPx, why: r.why, rescued: r.rescued, ringPx: r.ringPx,
+        score: { light: lt ? Math.round(lt.score) : null, dark: dk ? Math.round(dk.score) : null },
+        sizes: { ring: ring, mean: R, minLen: minLen, collarLen: collarLen, collarY: collarY, rescueLen: rescueLen, minW: Math.round(minW * 10) / 10, maxW: maxW, person: !!o.person } };
+    }
 
-  // Pure: Neutral Find piping on pixels already read, exactly as the panel runs it (and as
-  // tests/piping_cases_test.js runs it on saved real files): KBPS hands (sm, from
-  // psPipingSkinMask) and the found buttons (grown 0.2% of the long edge) kept out, KBPS
-  // person for the edge ring. buttons / person: rect-sized 0..255 or null. The skin is
-  // taken off afterwards (psPipingDropSkin), as for Colored.
-  function psPipingNeutralFind(src, alpha, rw, rh, docLong, tolPct, dir, sm, buttons, person, sizes) {
-    const N = rw * rh, keepOut = new Uint8Array(N);
-    if (sm) for (let k = 0; k < N; k++) if (sm.hands[k]) keepOut[k] = 1;
-    if (buttons) {
-      const b1 = new Uint8Array(N);
-      for (let k = 0; k < N; k++) if (buttons[k] > 127) b1[k] = 1;
-      const bo = psDilate(b1, rw, rh, Math.max(2, Math.round(docLong * 0.002)));
-      for (let k = 0; k < N; k++) if (bo[k]) keepOut[k] = 1;
+    // Pure: Neutral Find piping on pixels already read, exactly as the panel runs it (and as
+    // tests/piping_cases_test.js runs it on saved real files): KBPS hands (sm, from
+    // pipSkinMask) and the found buttons (grown 0.2% of the long edge) kept out, KBPS
+    // person for the edge ring. buttons / person: rect-sized 0..255 or null. The skin is
+    // taken off afterwards (pipDropSkin), as for Colored.
+    function pipNeutralFind(src, alpha, rw, rh, docLong, tolPct, dir, sm, buttons, person, sizes) {
+      const N = rw * rh, keepOut = new Uint8Array(N);
+      if (sm) for (let k = 0; k < N; k++) if (sm.hands[k]) keepOut[k] = 1;
+      if (buttons) {
+        const b1 = new Uint8Array(N);
+        for (let k = 0; k < N; k++) if (buttons[k] > 127) b1[k] = 1;
+        const bo = pipDilate(b1, rw, rh, Math.max(2, Math.round(docLong * 0.002)));
+        for (let k = 0; k < N; k++) if (bo[k]) keepOut[k] = 1;
+      }
+      const s = sizes || {};
+      return pipNeutral(src, alpha, rw, rh, tolPct, dir, docLong, keepOut, { ring: s.ring, minLen: s.minLen, person: person });
     }
-    const s = sizes || {};
-    return psPipingNeutral(src, alpha, rw, rh, tolPct, dir, docLong, keepOut, { ring: s.ring, minLen: s.minLen, person: person });
-  }
-  // Pure: where piping must never be found (rect-sized, 1 = keep out): KBPS hands grown a
-  // little, plus garment pixels with the hands' skin color near the hands or near the
-  // garment's edge (fingers, wrists, a neckline left inside the garment mask; skin is
-  // never in the middle of the garment, so a pink print there is left alone).
-  // `hands` = KBPS hands over the rect (0..255).
-  function psPipingSkinMask(src, alpha, hands, rw, rh) {
-    const N = rw * rh, h = new Uint8Array(N);
-    let hn = 0; for (let k = 0; k < N; k++) if (hands[k] > 127) { h[k] = 1; hn++; }
-    if (!hn) return null;
-    const handsOut = psDilate(h, rw, rh, Math.max(2, Math.round(Math.max(rw, rh) * 0.003)));
-    const E = Math.max(4, Math.round(Math.max(rw, rh) * 0.01));
-    const nearHands = psDilate(h, rw, rh, E * 2);
-    const A = new Float32Array(N); for (let k = 0; k < N; k++) A[k] = alpha[k] > 127 ? 1 : 0;
-    const inside = kbBoxBlur(A, rw, rh, E);                                 // < 1 near the garment's edge
-    const skin = new Uint8Array(N);
-    const ref = psColorRef(src.rgb, 3, h, N, src.valid);
-    if (ref) {
+    // Pure: where piping must never be found (rect-sized, 1 = keep out): KBPS hands grown a
+    // little, plus garment pixels with the hands' skin color near the hands or near the
+    // garment's edge (fingers, wrists, a neckline left inside the garment mask; skin is
+    // never in the middle of the garment, so a pink print there is left alone).
+    // `hands` = KBPS hands over the rect (0..255).
+    function pipSkinMask(src, alpha, hands, rw, rh) {
+      const N = rw * rh, h = new Uint8Array(N);
+      let hn = 0; for (let k = 0; k < N; k++) if (hands[k] > 127) { h[k] = 1; hn++; }
+      if (!hn) return null;
+      const handsOut = pipDilate(h, rw, rh, Math.max(2, Math.round(Math.max(rw, rh) * 0.003)));
+      const E = Math.max(4, Math.round(Math.max(rw, rh) * 0.01));
+      const nearHands = pipDilate(h, rw, rh, E * 2);
+      const A = new Float32Array(N); for (let k = 0; k < N; k++) A[k] = alpha[k] > 127 ? 1 : 0;
+      const inside = pipBoxBlur(A, rw, rh, E);                                 // < 1 near the garment's edge
+      const skin = new Uint8Array(N);
+      const ref = pipColorRef(src.rgb, 3, h, N, src.valid);
+      if (ref) {
+        for (let k = 0; k < N; k++) {
+          if (handsOut[k] || alpha[k] <= 127 || !src.valid[k]) continue;
+          if (!nearHands[k] && inside[k] > 0.98) continue;
+          if (Math.hypot(src.rgb[k * 3] - ref.r, src.rgb[k * 3 + 1] - ref.g, src.rgb[k * 3 + 2] - ref.b) <= ref.tol) skin[k] = 1;
+        }
+      }
+      return { hands: handsOut, skin: skin, ref: ref };
+    }
+    // Pure: take the skin mask off a piping plane. If the skin COLOR alone would take most
+    // of the piping, the piping is skin-colored itself: then only the hands come off.
+    function pipDropSkin(plane, sm) {
+      const r = { handsPx: 0, skinPx: 0, skinColorSkipped: false };
+      if (!sm) return r;
+      let rest = 0, bySkin = 0;                                  // piping found outside the hands
+      for (let k = 0; k < plane.length; k++) if (plane[k] && !sm.hands[k]) { rest++; if (sm.skin[k]) bySkin++; }
+      r.skinColorSkipped = rest > 0 && bySkin > rest * 0.6;
+      for (let k = 0; k < plane.length; k++) {
+        if (!plane[k]) continue;
+        if (sm.hands[k]) { plane[k] = 0; r.handsPx++; }
+        else if (sm.skin[k] && !r.skinColorSkipped) { plane[k] = 0; r.skinPx++; }
+      }
+      return r;
+    }
+    // Pure: Colored or Neutral piping for this CLEAN. CLEAN's fabric is gray, so thin
+    // lines that still carry color are colored trim; with (almost) none, the piping is
+    // white, black or gray. Skin (sm) is left out first.
+    function pipAutoPick(src, alpha, rw, rh, sm, tol) {
+      const N = rw * rh;
+      const col = pipPlane(src, alpha, rw, rh, "colored", tol.colored);
+      const neu = pipPlane(src, alpha, rw, rh, "neutral", tol.neutral);
+      if (sm) { pipDropSkin(col, sm); pipDropSkin(neu, sm); }
+      const f = new Float32Array(N); for (let k = 0; k < N; k++) f[k] = col[k] ? 1 : 0;
+      const r = Math.max(3, Math.round(Math.max(rw, rh) * 0.004));
+      const wide = pipBoxBlur(f, rw, rh, r * 2);                              // blobs (print left behind) are not lines
+      let garment = 0, colored = 0, neutral = 0;
       for (let k = 0; k < N; k++) {
-        if (handsOut[k] || alpha[k] <= 127 || !src.valid[k]) continue;
-        if (!nearHands[k] && inside[k] > 0.98) continue;
-        if (Math.hypot(src.rgb[k * 3] - ref.r, src.rgb[k * 3 + 1] - ref.g, src.rgb[k * 3 + 2] - ref.b) <= ref.tol) skin[k] = 1;
+        if (alpha[k] > 127) garment++;
+        if (col[k] && wide[k] < 0.6) colored++;
+        else if (neu[k]) {
+          const R = src.rgb[k * 3], G = src.rgb[k * 3 + 1], B = src.rgb[k * 3 + 2];
+          const mx = Math.max(R, G, B), mn = Math.min(R, G, B);
+          if (mx <= 20 || (mx - mn) / mx < 0.12) neutral++;
+        }
       }
+      const need = Math.max(500, Math.round(garment * 0.002));             // 0.2% of the garment
+      return { mode: colored >= need ? "colored" : "neutral", coloredPx: colored, neutralPx: neutral, garmentPx: garment, need: need };
     }
-    return { hands: handsOut, skin: skin, ref: ref };
-  }
-  // Pure: take the skin mask off a piping plane. If the skin COLOR alone would take most
-  // of the piping, the piping is skin-colored itself: then only the hands come off.
-  function psPipingDropSkin(plane, sm) {
-    const r = { handsPx: 0, skinPx: 0, skinColorSkipped: false };
-    if (!sm) return r;
-    let rest = 0, bySkin = 0;                                  // piping found outside the hands
-    for (let k = 0; k < plane.length; k++) if (plane[k] && !sm.hands[k]) { rest++; if (sm.skin[k]) bySkin++; }
-    r.skinColorSkipped = rest > 0 && bySkin > rest * 0.6;
-    for (let k = 0; k < plane.length; k++) {
-      if (!plane[k]) continue;
-      if (sm.hands[k]) { plane[k] = 0; r.handsPx++; }
-      else if (sm.skin[k] && !r.skinColorSkipped) { plane[k] = 0; r.skinPx++; }
-    }
-    return r;
-  }
-  // Pure: Colored or Neutral piping for this CLEAN. CLEAN's fabric is gray, so thin
-  // lines that still carry color are colored trim; with (almost) none, the piping is
-  // white, black or gray. Skin (sm) is left out first.
-  function psPipingAutoPick(src, alpha, rw, rh, sm) {
-    const N = rw * rh;
-    const col = psPipingPlane(src, alpha, rw, rh, "colored", PS_TRIM_TOL.colored);
-    const neu = psPipingPlane(src, alpha, rw, rh, "neutral", PS_TRIM_TOL.neutral);
-    if (sm) { psPipingDropSkin(col, sm); psPipingDropSkin(neu, sm); }
-    const f = new Float32Array(N); for (let k = 0; k < N; k++) f[k] = col[k] ? 1 : 0;
-    const r = Math.max(3, Math.round(Math.max(rw, rh) * 0.004));
-    const wide = kbBoxBlur(f, rw, rh, r * 2);                              // blobs (print left behind) are not lines
-    let garment = 0, colored = 0, neutral = 0;
-    for (let k = 0; k < N; k++) {
-      if (alpha[k] > 127) garment++;
-      if (col[k] && wide[k] < 0.6) colored++;
-      else if (neu[k]) {
-        const R = src.rgb[k * 3], G = src.rgb[k * 3 + 1], B = src.rgb[k * 3 + 2];
-        const mx = Math.max(R, G, B), mn = Math.min(R, G, B);
-        if (mx <= 20 || (mx - mn) / mx < 0.12) neutral++;
-      }
-    }
-    const need = Math.max(500, Math.round(garment * 0.002));             // 0.2% of the garment
-    return { mode: colored >= need ? "colored" : "neutral", coloredPx: colored, neutralPx: neutral, garmentPx: garment, need: need };
-  }
+
+
+    return { plane: pipPlane, neutral: pipNeutral, neutralFind: pipNeutralFind, skinMask: pipSkinMask, dropSkin: pipDropSkin,
+      autoPick: pipAutoPick, neuAuto: pipNeuAuto, NEU: PIP_NEU };
+  })();
+  // ===== PIPING DETECTION — end =====
 
   // ----- FIND PIPING -------------------------------------------------------------
   async function executePsPiping(params) {
@@ -9130,12 +9327,12 @@
       await ps.core.executeAsModal(async function () { src = await psReadLayerRgb(srcId, rect); }, { commandName: "KBImage — read for piping" });
       step = "reading KBPS hands";
       let sm = null;
-      if (kbChannelExists(PS_HANDS_CH)) sm = psPipingSkinMask(src, g.alpha, await psReadMaskAlpha(rect, PS_HANDS_CH), rw, rh);
+      if (kbChannelExists(PS_HANDS_CH)) sm = KBPiping.skinMask(src, g.alpha, await psReadMaskAlpha(rect, PS_HANDS_CH), rw, rh);
       params.hands = !!sm;
       if (params.auto) {
         step = "picking Colored or Neutral";
         setStatus("busy", "Looking at the thin lines in " + params.source + "…");
-        const pick = psPipingAutoPick(src, g.alpha, rw, rh, sm);
+        const pick = KBPiping.autoPick(src, g.alpha, rw, rh, sm, PS_TRIM_TOL);
         params.mode = pick.mode; params.tolPct = psTrimTol[pick.mode];
         params.pick = { coloredPx: pick.coloredPx, neutralPx: pick.neutralPx, need: pick.need };
         psSetPipingMode(pick.mode);
@@ -9153,7 +9350,7 @@
         if (kbChannelExists(PS_PERSON_CH)) { step = "reading KBPS person"; person = await psReadMaskAlpha(rect, PS_PERSON_CH); }
         step = "finding the piping";
         setStatus("busy", "Neutral: looking for " + (params.dir === "auto" ? "light and dark" : params.dir) + " lines in " + params.source + "…");
-        const nr = psPipingNeutralFind(src, g.alpha, rw, rh, Math.max(g.docW, g.docH), params.tolPct, params.dir, sm, buttons, person, { ring: params.ringPx, minLen: params.minLenPx });
+        const nr = KBPiping.neutralFind(src, g.alpha, rw, rh, Math.max(g.docW, g.docH), params.tolPct, params.dir, sm, buttons, person, { ring: params.ringPx, minLen: params.minLenPx });
         params.sizes = nr.sizes; params.rescued = nr.rescued;
         plane = nr.plane;
         params.dirPicked = nr.dir; params.dirBy = params.dir === "auto" ? "auto" : "you";
@@ -9161,9 +9358,9 @@
         psPipingDirShow(nr.dir, params.dirBy);
         trace("ps piping neutral: " + JSON.stringify({ dir: nr.dir, by: params.dirBy, kept: nr.kept, dropped: nr.dropped, why: nr.why, score: nr.score, sizes: nr.sizes, buttonsOut: params.buttonsOut }));
       } else {
-        plane = psPipingPlane(src, g.alpha, rw, rh, params.mode, params.tolPct);
+        plane = KBPiping.plane(src, g.alpha, rw, rh, params.mode, params.tolPct);
       }
-      const drop = psPipingDropSkin(plane, sm);
+      const drop = KBPiping.dropSkin(plane, sm);
       params.skinPx = drop.handsPx + drop.skinPx;
       let n = 0; for (let k = 0; k < plane.length; k++) if (plane[k]) n++;
       params.pixels = n;
@@ -9183,7 +9380,7 @@
   }
   function psPipingParams() {
     const m = psPipingMode(), f = psNeuFields();
-    return { mode: m, tolPct: psTrimTol[m], auto: psPipingModeBy === "auto", dir: psPipingDirBy === "you" ? psPipingDir() : "auto", ringPx: f.ring, minLenPx: f.minLen };
+    return { mode: m, tolPct: psTrimTol[m], auto: psPipingModeBy === "auto", dir: psPipingDirBy !== "auto" ? psPipingDir() : "auto", ringPx: f.ring, minLenPx: f.minLen };
   }
   // Step 4 Settings: Edge ring (px) and Min line length (px) for Neutral piping, filled with
   // the auto values for this image until the retoucher types one (then theirs, until the
@@ -9192,7 +9389,7 @@
   function psNeuDocLong() { try { const d = psMod().app.activeDocument; if (d) return Math.max(Math.round(d.width), Math.round(d.height)); } catch (_) {} return 4000; }
   function psNeuFieldsFill(reset) {
     if (reset) psNeuBy = { ring: "auto", minLen: "auto" };
-    const au = psNeuAuto(psNeuDocLong());
+    const au = KBPiping.neuAuto(psNeuDocLong());
     [["ps-piping-ring", "ring"], ["ps-piping-minlen", "minLen"]].forEach(function (x) {
       const el = $(x[0]);
       if (!el) return;
@@ -9200,9 +9397,38 @@
       if (psNeuBy[x[1]] === "auto" && document.activeElement !== el) el.value = String(au[x[1]]);
     });
   }
+  // Tuned values travel with the file: after each Find piping, the mode, Light / Dark, both
+  // tolerances, Edge ring and Min line length it used are saved in the document's state, and
+  // come back when the document opens (a reload, another document and back) as the file's own
+  // values instead of being guessed again. Redo keeps them; Start over clears them with the
+  // rest of the state.
+  async function psPipingStateSave(p) {
+    try {
+      const st = await psStateLoad();
+      st.piping = { mode: p.mode, tol: { colored: psTrimTol.colored, neutral: psTrimTol.neutral },
+        dir: p.mode === "neutral" && p.dirPicked ? p.dirPicked : (st.piping && st.piping.dir) || null,
+        ring: p.sizes ? p.sizes.ring : p.ringPx, minLen: p.sizes ? p.sizes.minLen : p.minLenPx };
+      await psStateSave(st);
+      trace("ps piping: settings saved with the document " + JSON.stringify(st.piping));
+    } catch (e) { traceErr("ps piping: save settings", e); }
+  }
+  function psPipingStateApply(pp) {
+    if (!pp) return;
+    if (pp.tol) { if (pp.tol.colored > 0) psTrimTol.colored = pp.tol.colored; if (pp.tol.neutral > 0) psTrimTol.neutral = pp.tol.neutral; }
+    if (pp.mode === "neutral" || pp.mode === "colored") {
+      psPipingModeBy = "doc"; psSetPipingMode(pp.mode);
+      psPipingModeNote("Saved with this file: " + (pp.mode === "neutral" ? "Neutral" : "Colored") + ". Click the other to change.");
+    }
+    if (pp.dir === "light" || pp.dir === "dark") { psPipingDirBy = "doc"; psPipingDirShow(pp.dir, "doc"); }
+    const set = function (id, key, v) { const el = $(id); if (el && v != null && isFinite(v)) { el.value = String(Math.round(v)); psNeuBy[key] = "doc"; } };
+    set("ps-piping-ring", "ring", pp.ring);
+    set("ps-piping-minlen", "minLen", pp.minLen);
+    try { psTrimTolSync(); } catch (_) {}
+    trace("ps piping: settings from the document " + JSON.stringify(pp));
+  }
   function psNeuFields() {
     psNeuFieldsFill(false);
-    const au = psNeuAuto(psNeuDocLong());
+    const au = KBPiping.neuAuto(psNeuDocLong());
     return { ring: Math.round(kbNum("ps-piping-ring", au.ring, 0, 200)), minLen: Math.round(kbNum("ps-piping-minlen", au.minLen, 5, 5000)) };
   }
   async function actPsFindPiping() {
@@ -9217,6 +9443,7 @@
     try {
       await psRecall(4, "ps-recall-anchor-4p", { op: "printswap:piping", params: p, previewChannels: psTrimPreviewCh, targetLayerId: null, sourceRef: "garment:" + PS_GARMENT_CH,
         paramsProvider: psPipingParams, execute: executePsPiping, onSettle: psTrimOnSettle("piping") });
+      await psPipingStateSave(p);                          // the values this run used travel with the file
       setStatus("ok", (p.mode === "neutral"
           ? "Neutral: " + p.dirPicked + " lines" + (p.dirBy === "auto" ? " (auto)" : "") + ". Kept " + p.linesKept + " line piece" + (p.linesKept === 1 ? "" : "s") + ", dropped " + Number(p.linesDropped).toLocaleString("en-US")
             + " (short " + p.dropWhy.short + ", hairline " + p.dropWhy.hairline + ", wide " + p.dropWhy.wide + ", soft " + p.dropWhy.soft + ", faint " + p.dropWhy.faint + ")." + (p.auto ? " Neutral picked automatically." : "") + " " + p.pixels + " px in " + p.source + " selected as KBPS piping."
@@ -9274,7 +9501,7 @@
       }
       const f = psNeuFields();
       const meta = { title: doc.title, source: cleanId != null ? "CLEAN" : "photo", w: rw, h: rh, rect: rect, docW: g.docW, docH: g.docH,
-        has: has, mode: psPipingMode(), tolPct: psTrimTol.neutral, dir: psPipingDirBy === "you" ? psPipingDir() : "auto", ringPx: f.ring, minLenPx: f.minLen, savedAt: new Date().toISOString() };
+        has: has, mode: psPipingMode(), modeBy: psPipingModeBy, tolPct: psTrimTol[psPipingMode()], dir: psPipingDirBy !== "auto" ? psPipingDir() : "auto", ringPx: f.ring, minLenPx: f.minLen, savedAt: new Date().toISOString() };
       files.push(await psWriteDataFile(name + "-meta.json", JSON.stringify(meta, null, 1)));
       trace("ps piping case: " + files.join(", "));
       setStatus(has.piping ? "ok" : "bad", "Saved the piping test case " + name + " (" + files.length + " files, " + rw + " × " + rh + ") in the plug-in data folder."
@@ -12051,6 +12278,13 @@
       let mergedId = null, hairId = null;
       const bg = psBgLayer();
       await ps.core.executeAsModal(async function () {
+        step = "moving the PRINT layers into " + PS_BACKUP_GROUP;
+        await psBackupTidyInModal();                                   // Backup (and any stray PRINT source / tiled) hidden: never stamped
+        const bk = psBackupGroup();
+        if (bk) { try { bk.visible = false; } catch (_) {} }
+        const shown = psBackupPrints().filter(function (l) { try { return l.visible && (!bk || psParentId(l) !== bk.id); } catch (_) { return false; } });
+        if (shown.length) throw new Error(shown.map(function (l) { return String(l.name); }).join(", ") + " is still visible outside " + PS_BACKUP_GROUP);
+        step = "stamping the visible result";
         try { await deselectAll(); } catch (_) {}
         if (bg) { try { bg.visible = false; } catch (_) {} }          // original background in the final
         mergedId = await kbStampVisibleInModal(); made.push(mergedId);   // from an empty visible layer on top

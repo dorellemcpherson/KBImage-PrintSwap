@@ -48,10 +48,16 @@ Photoshop UXP panel (`manifest.json`, `index.html`, `src/app.js`). One view, Pri
 
 ## Testing
 
-* **Piping detection:** after ANY change to Find piping, run `node tests/neutral_piping_test.js`
-  (synthetic) and `node tests/piping_cases_test.js` (real garments saved with step 4 Adjust ›
-  Save piping test case, imported with `node tests/import_piping_cases.js`). All must pass, so
-  fixing one garment cannot break another.
+* **Piping regression, before EVERY commit (whatever the change):** `node tests/piping/run.js`.
+  It runs the `KBPiping` module (the PIPING DETECTION block of `src/app.js`: pure, no shared
+  state, its own helper copies) on every case in `tests/piping/cases/` and scores it against
+  the approved KBPS piping: IoU, px missed, px extra. A case more than 2 points under its best
+  stops the commit (the git pre-commit hook runs it; prepare-commit-msg writes the scores into
+  the message). It also fails if the module uses anything from outside the block. Never edit
+  the block for layout, parts or shading work. Real cases: step 4 Adjust › Save piping test
+  case once KBPS piping is right, then `node tests/import_piping_cases.js`.
+* After a change to piping detection itself, also run `node tests/neutral_piping_test.js` and
+  `node tests/piping_cases_test.js`.
 * Offline: `node tests/garment_types_test.js` and `node tests/placement_test.js` (they read
   the real functions out of `src/app.js`). The `tests/` folder is removed before handover.
 * In Photoshop: after any change to `src/app.js` or `manifest.json`, **Remove the plug-in in
