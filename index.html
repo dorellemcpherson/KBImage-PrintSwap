@@ -219,6 +219,7 @@ body {
 /* Each step: options, Adjust, then the main button at the bottom right with its price under it. */
 .ps-main { display: flex; flex-direction: column; align-items: flex-end; }
 .ps-main > .ps-cost { margin-top: 3px; text-align: right; }
+.ps-main > .ps-parts-arm { text-align: left; color: var(--alert); }
 .btn-primary.disabled { opacity: 0.45; cursor: not-allowed; }
 .ps-merged-note, .ps-step-note { font-size: 11px; line-height: 14px; color: var(--alert); text-align: right; margin-top: 3px; }
 .ps-dirty { font-size: 11px; line-height: 14px; color: var(--accent); text-align: right; }
@@ -1003,6 +1004,7 @@ code {
           </div>
           <div class="ps-main">
             <div id="ps-parts-btn" class="btn-primary disabled" role="button" tabindex="0" data-action="ps-find-parts">Find parts</div>
+            <div id="ps-parts-arm" class="ps-cost ps-parts-arm hidden"></div>
             <div id="ps-parts-cost" class="ps-cost">SAM 3.1 · $0.07</div>
           </div>
           <div id="ps-recall-anchor-6" class="ps-recall-anchor"></div>

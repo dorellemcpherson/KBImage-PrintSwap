@@ -4662,7 +4662,7 @@
       //    then scaled down (aspect kept) until it fits.
       step = "reading the garment area";
       setStatus("busy", "Reading the garment area…");
-      const hide = psOwnLayers().concat(psCleanLayers()).concat(psPartsGroup() ? [psPartsGroup()] : []);
+      const hide = psOwnLayers().concat(psCleanLayers()).concat(psPartsHideables());   // the part groups, never PS, PB or SDW
       const plan0 = psPadPlan(params.model, rw, rh, params.imageSize);
       let scale = Math.min(1, Math.sqrt(PS_NBP_MAX_PX / (plan0.PW * plan0.PH)));
       let src = null, plan = null, cw = 0, ch = 0;
@@ -4896,8 +4896,10 @@
       const rw = rect.right - rect.left, rh = rect.bottom - rect.top;
       if (!(rw > 0 && rh > 0)) throw new Error("the garment is outside the photo layer.");
       // An accepted CLEAN (step 3) is what gets grayed (read with it shown), and GREY exact goes above it.
+      // An older GREY exact (accepted): the new one goes right above it, in its place.
       const cleanId = psAcceptedCleanId();
-      const anchorId = cleanId != null ? cleanId : psStackBaseId(photoId);   // above BG LIGHTEN
+      const olds = psGreyExactLayers().filter(function (l) { return !psIsPending(l.id); });
+      const anchorId = olds.length ? olds[olds.length - 1].id : (cleanId != null ? cleanId : psStackBaseId(photoId));   // above BG LIGHTEN
       params.source = cleanId != null ? "CLEAN" : "photo";
       trace("ps gray [" + method + "]: target " + params.targetHex + " (luma " + target + "), photo layer " + photoId + ", source " + params.source + (cleanId != null ? " (" + cleanId + ")" : "") + ", area " + JSON.stringify(rect));
 
@@ -4979,6 +4981,7 @@
         execute: executePsGray,
         onSettle: async function (state, accepted) {
           if (!accepted) return null;
+          try { await psGreyExactKeepOne(state && state.greyId); } catch (e) { traceErr("ps gray: delete the older " + PS_EXACT_LAYER, e); }   // replaced in place
           const hex = psTargetHex();
           psGrayDoc = { docId: psActiveDocId(), made: state && state.targetHex ? state.targetHex : (hex ? hex.hex : PS_GRAY_DEFAULT) };
           await psGraySaveDoc({ grayMade: psGrayDoc.made });
@@ -5021,10 +5024,11 @@
     let step = "making " + PS_EXACT_LAYER;
     try {
       let oldVis = true; try { oldVis = old.visible; } catch (_) {}
-      const r = await executePsGray(p);                                   // above CLEAN, under the old one
+      const r = await executePsGray(p);                                   // right above the old one, in its place
       const newId = r.layerIds[0];
       step = "replacing the old " + PS_EXACT_LAYER;
       await deleteLayersById([old.id]);
+      await psGreyExactKeepOne(newId);                                    // any other GREY exact goes too
       await ps.core.executeAsModal(async function () { const n = kbLayerById(newId); if (n) { try { n.visible = oldVis; } catch (_) {} } }, { commandName: "KBImage — GREY exact" });
       let shadeMsg = "";
       const sg = psSdwGroup() || psTopLayerNamed(PS_SHADE_GROUP), sv = psTopLayerNamed(PS_VEIL_NAME);
@@ -5071,7 +5075,7 @@
   //     rest of the bottoms → PANT, anything unclear → UNASSIGNED. Edges refined
   //     against the photo, clipped to "KBPS garment", saved as channels
   //     "KBPS part <NAME>".
-  //   LAYERS — group PARTS above GREY exact; inside it one group per part name
+  //   LAYERS — group PARTS in PS, under PB and SDW; inside it one group per part name
   //     (team order), each holding "<NAME> shape": flat mid gray where the part
   //     is (mask applied → real pixels, for the print clipping in step 7).
   //     Shapes hidden.
@@ -5112,6 +5116,16 @@
     "LEFT TOP", "RIGHT TOP", "LEFT PANT", "RIGHT PANT"];
 
   let psPartsArmUntil = 0;                            // two clicks to replace accepted parts
+  let psPartsArmTimer = null;
+  // The two-click warning, under the Find parts button only (gone after 5 seconds).
+  function psPartsArmNote(on) {
+    const n = $("ps-parts-arm");
+    if (psPartsArmTimer) { clearTimeout(psPartsArmTimer); psPartsArmTimer = null; }
+    if (!n) return;
+    n.textContent = on ? "This replaces the parts and any hand fixes. Click Find parts again within 5 seconds to go ahead." : "";
+    n.classList.toggle("hidden", !on);
+    if (on) psPartsArmTimer = setTimeout(function () { psPartsArmTimer = null; psPartsArmNote(false); }, 5000);
+  }
 
   // ----- GARMENT TYPES (docs/parts-list.md, A–H) ------------------------------
   // The user picks the type; only its parts are searched (and only the checked
@@ -5595,9 +5609,9 @@
   // The team's structure: PS (top level, under MERGED VERSIONS and HAIR) holds PB (the
   // trims), SDW (step 8) and the part groups, in that order. A v0.19 document (top-level
   // trims, PARTS, the GREY group) still works; psLayoutFixInModal moves it into PS. Step 6's
-  // preview is a top-level PARTS group until Accept moves its parts into PS.
+  // preview is a PARTS group inside PS, under PB and SDW, until Accept moves its parts out of it.
   const PS_PS_GROUP = "PS", PS_PB_GROUP = "PB", PS_SDW_GROUP = "SDW", PS_BACKUP_GROUP = "Backup";
-  function psNotPart(n) { return n === PS_PB_GROUP || n === PS_SDW_GROUP || n === PS_BACKUP_GROUP; }   // PS's own groups
+  function psNotPart(n) { return n === PS_PB_GROUP || n === PS_SDW_GROUP || n === PS_BACKUP_GROUP || n === PS_PARTS_GROUP; }   // PS's own groups (and step 6's preview)
   function psGroupChild(g, name) {
     try { for (let i = 0; i < g.layers.length; i++) if (String(g.layers[i].name) === name && g.layers[i].layers) return g.layers[i]; } catch (_) {}
     return null;
@@ -5605,6 +5619,19 @@
   function psPsGroup() { const l = psTopLayerNamed(PS_PS_GROUP); return l && l.layers ? l : null; }
   function psPbGroup() { const p = psPsGroup(); return p ? psGroupChild(p, PS_PB_GROUP) : null; }
   function psSdwGroup() { const p = psPsGroup(); return p ? psGroupChild(p, PS_SDW_GROUP) : null; }
+  function psBackupGroup() { const p = psPsGroup(); return p ? psGroupChild(p, PS_BACKUP_GROUP) : null; }
+  // Inside executeAsModal: group g (in PS, or about to go in) where the parts go: under PB
+  // and SDW, above Backup. first = right under PB and SDW; else after the last part group.
+  function psPlacePartsInPs(g, first) {
+    const P = psPsGroup(), EP = psMod().constants.ElementPlacement;
+    if (!P || !g) return;
+    const up = psSdwGroup() || psPbGroup(), bk = psBackupGroup();
+    const parts = first ? [] : psPsParts(P).filter(function (k) { return k.id !== g.id; }), last = parts[parts.length - 1];
+    if (last) g.move(last, EP.PLACEAFTER);
+    else if (up) g.move(up, EP.PLACEAFTER);
+    else if (bk) g.move(bk, EP.PLACEBEFORE);
+    else { const top = P.layers[0]; if (!top) g.move(P, EP.PLACEINSIDE); else if (top.id !== g.id) g.move(top, EP.PLACEBEFORE); }
+  }
   // The part groups in PS (every group but PB, SDW and Backup), top → bottom.
   function psPsParts(p) {
     const out = [];
@@ -5618,22 +5645,36 @@
     return psTopLayerNamed(name);
   }
   function psAccepted(l) { return !!(l && !psIsPending(l.id)); }
-  // Step 6 is done: an accepted PARTS (older files) or a part group in PS.
-  function psPartsAccepted() {
-    const t = psTopLayerNamed(PS_PARTS_GROUP);
-    if (t && t.layers && !psIsPending(t.id)) return true;
-    const p = psPsGroup();
-    return !!p && psPsParts(p).some(function (g) { return !psIsPending(g.id); });
-  }
-  // What holds the part groups: a top-level PARTS (older files, or step 6's preview), else
-  // PS when it has a part group in it.
-  function psPartsGroup() {
+  // A PARTS group: top level (older files) or in PS (step 6's preview).
+  function psPartsBox() {
     try {
       const top = psMod().app.activeDocument.layers;
       for (let i = 0; i < top.length; i++) if (top[i] && String(top[i].name) === PS_PARTS_GROUP && top[i].layers) return top[i];
     } catch (_) {}
     const p = psPsGroup();
+    return p ? psGroupChild(p, PS_PARTS_GROUP) : null;
+  }
+  // Step 6 is done: an accepted PARTS (older files) or a part group in PS.
+  function psPartsAccepted() {
+    const t = psPartsBox();
+    if (t && !psIsPending(t.id)) return true;
+    const p = psPsGroup();
+    return !!p && psPsParts(p).some(function (g) { return !psIsPending(g.id); });
+  }
+  // What holds the part groups: a PARTS group (older files, or step 6's preview), else
+  // PS when it has a part group in it.
+  function psPartsGroup() {
+    const b = psPartsBox();
+    if (b) return b;
+    const p = psPsGroup();
     return p && psPsParts(p).length ? p : null;
+  }
+  // What to hide, show or delete as "the parts": the part groups when they live in PS (never
+  // PS, PB, SDW or Backup), else the PARTS group.
+  function psPartsHideables() {
+    const pg = psPartsGroup();
+    if (!pg) return [];
+    return String(pg.name) === PS_PS_GROUP ? psPsParts(pg) : [pg];
   }
   function psPartGroup(name) {
     const pg = psPartsGroup();
@@ -5651,9 +5692,9 @@
     const pg = psPartsGroup(), out = [];
     if (!pg) return out;
     try {
-      for (let i = 0; i < pg.layers.length; i++) {
-        const g = pg.layers[i];
-        if (!g || !g.layers) continue;
+      const kids = psPsParts(pg);                    // the part groups only: never PB, SDW or Backup
+      for (let i = 0; i < kids.length; i++) {
+        const g = kids[i];
         for (let j = 0; j < g.layers.length; j++) if (/ shape$/.test(String(g.layers[j].name))) out.push(g.layers[j]);
       }
     } catch (_) {}
@@ -5662,6 +5703,21 @@
   function psGreyExactLayer() {
     const l = kbFindLayers(PS_EXACT_LAYER).filter(function (x) { return String(x.name) === PS_EXACT_LAYER; });
     return l.length ? l[0] : null;
+  }
+  // Every GREY exact (exact name), oldest → newest (Photoshop layer ids only grow).
+  function psGreyExactLayers() {
+    return kbFindLayers(PS_EXACT_LAYER).filter(function (x) { return String(x.name) === PS_EXACT_LAYER; })
+      .sort(function (a, b) { return a.id - b.id; });
+  }
+  // Only one GREY exact: keep keepId (else the newest), delete the others (unlocked first).
+  async function psGreyExactKeepOne(keepId) {
+    const all = psGreyExactLayers();
+    if (all.length < 2) return 0;
+    const keep = keepId != null && all.some(function (l) { return l.id === keepId; }) ? keepId : all[all.length - 1].id;
+    const ids = all.filter(function (l) { return l.id !== keep; }).map(function (l) { return l.id; });
+    await deleteLayersById(ids);
+    trace("ps gray: kept " + PS_EXACT_LAYER + " " + keep + ", deleted " + ids.join(", "));
+    return ids.length;
   }
   // The photo under the gray (for edge refine): the step 2 photo if still
   // there, else the first visible ordinary top-level layer below GREY exact.
@@ -5753,7 +5809,7 @@
     const pg = psPartsGroup();
     if (!pg) throw new Error("there is no PARTS group. Click Find parts first.");
     const ps = psMod();
-    const first = pg.layers && pg.layers[0];
+    const first = psPsParts(pg)[0] || (pg.layers && pg.layers[0]);   // a part group, never PB above it
     if (first) await kbSelectLayerById(first.id);
     const sid = await psMakeShapeInModal(name, false);
     const gid = await psGroupInModal([sid], name);
@@ -5771,7 +5827,8 @@
         let next = null;
         for (let j = at + 1; at >= 0 && j < team.length && !next; j++) { const o = psPartGroup(team[j]); if (o && o.id !== gid) next = o; }
         if (next) g.move(next, EP.PLACEBEFORE);
-        else { const kids = pg.layers, last = kids && kids[kids.length - 1]; if (last && last.id !== gid) g.move(last, EP.PLACEAFTER); }
+        else if (String(pg.name) === PS_PS_GROUP) psPlacePartsInPs(g, false);   // after the last part group, above Backup
+        else { const kids = psPsParts(pg).filter(function (k) { return k.id !== gid; }), last = kids[kids.length - 1]; if (last) g.move(last, EP.PLACEAFTER); }
       }
     } catch (e) { traceErr("ps order group " + name + " in PARTS", e); }
   }
@@ -6028,10 +6085,12 @@
   // What a type change after step 2 deletes (steps 3–9): plug-in layers by their exact
   // names at the top of the stack, and the trim and part channels. KBPS garment stays.
   function psGtypeResetTargets() {
-    const names = [PS_CLEAN_NAME, PS_EXACT_LAYER, PS_PS_GROUP, PS_PARTS_GROUP, PS_SHADE_GROUP, PS_VEIL_NAME, PS_MERGED_NAME, PS_MERGED_GROUP, PS_HAIR_NAME, PS_THREAD_NAME]
+    const names = [PS_CLEAN_NAME, PS_EXACT_LAYER, PS_PARTS_GROUP, PS_SHADE_GROUP, PS_VEIL_NAME, PS_MERGED_NAME, PS_MERGED_GROUP, PS_HAIR_NAME, PS_THREAD_NAME]
       .concat(Object.keys(PS_TRIM_KINDS).map(function (k) { return PS_TRIM_KINDS[k].group; }));
     const layers = [];
-    names.forEach(function (n) { const l = psTopLayerNamed(n); if (l && layers.indexOf(l) < 0) layers.push(l); });
+    const add = function (l) { if (l && !layers.some(function (x) { return x.id === l.id; })) layers.push(l); };
+    add(psPsGroup());                                       // PS whole (PB, SDW, the parts, Backup)
+    names.forEach(function (n) { add(psTopLayerNamed(n)); });   // and the top-level layers (older files too)
     const chans = Object.keys(PS_TRIM_KINDS).map(function (k) { return PS_TRIM_KINDS[k].ch; })
       .concat([PS_THREAD_CH], psAllPartNames().map(function (n) { return PS_PART_CH + n; }))
       .reduce(function (a, c) { return a.concat([c, psRawName(c)]); }, [])          // + the edge-softness base copies
@@ -6109,11 +6168,11 @@
       case 1: return { layers: [PS_BG_NAME, PS_MODEL_NAME, PS_WHITE_NAME], chans: [PS_PERSON_CH, PS_HAIR_CH] };
       case 2: return { layers: [], chans: [PS_GARMENT_CH, PS_HANDS_CH] };
       case 3: return { layers: [PS_CLEAN_NAME], chans: [] };
-      case 4: return { layers: [PS_PB_GROUP].concat(trimGroups, [PS_THREAD_NAME]), chans: trimChs.concat([PS_THREAD_CH]) };
+      case 4: return { layers: trimGroups.concat([PS_THREAD_NAME]), inPs: function () { return [psPbGroup()]; }, chans: trimChs.concat([PS_THREAD_CH]) };   // older files: top-level trims
       case 5: return { layers: [PS_EXACT_LAYER], chans: [] };
-      case 6: return { layers: [PS_PARTS_GROUP], partsInPs: true, chans: psAllPartNames().map(function (nm) { return PS_PART_CH + nm; }) };
-      case 7: return { layers: [PS_BACKUP_GROUP], chans: [], prints: true };
-      case 8: return { layers: [PS_SDW_GROUP, PS_SHADE_GROUP].concat(PS_SHADE_NAMES), chans: [] };   // SDW; older files: GREY, GREY copy 3 and strays
+      case 6: return { layers: [PS_PARTS_GROUP], inPs: function () { const P = psPsGroup(); return [psPartsBox()].concat(P ? psPsParts(P) : []); }, chans: psAllPartNames().map(function (nm) { return PS_PART_CH + nm; }) };
+      case 7: return { layers: [], inPs: function () { return [psBackupGroup()]; }, chans: [], prints: true };
+      case 8: return { layers: [PS_SHADE_GROUP].concat(PS_SHADE_NAMES), inPs: function () { return [psSdwGroup()]; }, chans: [] };   // SDW; older files: GREY, GREY copy 3 and strays
       default: return { layers: [PS_MERGED_NAME, PS_MERGED_GROUP, PS_HAIR_NAME], chans: [] };
     }
   }
@@ -6124,23 +6183,23 @@
     let prints = false;
     let top = [];
     try { top = Array.from(psMod().app.activeDocument.layers); } catch (_) {}
-    // Layers are looked for at the top level, in PS and in PB. From step 4 on, PS goes whole.
-    const P = psPsGroup(), B = psPbGroup();
+    // A step's own layers at the top level (by their names: older files too) and in PS (by
+    // the PS helpers). From step 4 on, PS goes whole.
+    const P = psPsGroup();
     const add = function (l) { if (l && !layers.some(function (x) { return x.id === l.id; })) layers.push(l); };
     if (P && from <= 4) add(P);
-    const pool = top.concat(P && from > 4 ? Array.from(P.layers) : [], B && from > 4 ? Array.from(B.layers) : []);
     for (let n = from; n <= PS_STEP_COUNT; n++) {
       const own = psStepOwn(n);
       own.layers.forEach(function (nm) {
-        pool.forEach(function (l) { if (String(l.name) === nm && !(P && l.id === P.id)) add(l); });
+        top.forEach(function (l) { if (String(l.name) === nm && !(P && l.id === P.id)) add(l); });
       });
-      if (own.partsInPs && P && from > 4) psPsParts(P).forEach(add);
+      if (own.inPs && P && from > 4) own.inPs().forEach(add);
       own.chans.forEach(function (c) { [c, psRawName(c)].forEach(function (x) { if (chans.indexOf(x) < 0 && kbChannelExists(x)) chans.push(x); }); });
       if (own.prints) prints = true;
     }
     if (all) {
       // leftovers from earlier versions and interrupted runs: temp layers (kb_ / KBPS_tmp)
-      top.forEach(function (l) { const n = String(l.name); if ((n.indexOf("kb_") === 0 || n.indexOf("KBPS_tmp") === 0) && layers.indexOf(l) < 0) layers.push(l); });
+      top.forEach(function (l) { const n = String(l.name); if (n.indexOf("kb_") === 0 || n.indexOf("KBPS_tmp") === 0) add(l); });
       try {
         const cs = psMod().app.activeDocument.channels;
         for (let i = 0; i < cs.length; i++) { const c = String(cs[i].name); if (c.indexOf("KBPS") === 0 && chans.indexOf(c) < 0) chans.push(c); }
@@ -6241,14 +6300,13 @@
       }, { commandName: "KBImage — Print Swap " + (rp.all ? "start over" : "redo step " + rp.from) });
       if (psBgLayer()) { const c = $("ps-bg-on"); if (c) c.checked = true; }
       trace("ps reset: deleted layers [" + tg.names.join(", ") + "], channels [" + tg.chans.join(", ") + "]");
+      if (rp.all || rp.from <= 4) await psTrimColorsClear();   // the trims are gone: built again, they are Original
       if (rp.all) {
         psGarmentType = null; psGtypePendingChange = null; psDocType = null; psOtherExtra = [];
         psStaleSteps = []; psGarmentSnap = null;
         const upKept = !!psUpscaleLayer(), upInfo = psUpInfo();
         psUpSet(upKept ? "kept" : null, upKept ? upInfo : null);   // step 0 can run again; UPSCALE stays
         try { psGrayFromDocState(psActiveDocId(), null); } catch (_) {}   // gray back to Mid
-        psTrimColors = {}; psTrimLink = false;                            // the trim groups are gone: colors back to Original
-        try { psTrimColorRender(); } catch (_) {}
         try {
           const st0 = psStateEmpty();
           if (upKept) { st0.upscale = "kept"; if (upInfo) st0.upInfo = upInfo; }
@@ -6324,7 +6382,7 @@
     while (l && guard++ < 20) {
       const p = l.parent;
       if (!p) return null;
-      if (String(p.name) === PS_PARTS_GROUP && !p.parent) return l.layers ? String(l.name) : null;
+      if (String(p.name) === PS_PARTS_GROUP && (!p.parent || (String(p.parent.name) === PS_PS_GROUP && !p.parent.parent))) return l.layers ? String(l.name) : null;
       if (String(p.name) === PS_PS_GROUP && !p.parent) { const n = String(l.name); return l.layers && !psNotPart(n) ? n : null; }
       l = p;
     }
@@ -6681,7 +6739,7 @@
       const wanted = gt.team ? psWithLeftNeck(typeOrder, !!cut.labels["LEFT NECK"]) : typeOrder;
       // a group only for a part with a shape (never an empty one); the rest are "not in this photo"
       const order = (cut.labels[PS_UNASSIGNED] ? [PS_UNASSIGNED] : []).concat(wanted.filter(function (n) { return !!cut.labels[n]; }));
-      let partsId = null;
+      let partsId = null, newPsId = null;
       await ps.core.executeAsModal(async function () {
         try { await deselectAll(); } catch (_) {}
         await kbSelectLayerById(grey.id);
@@ -6692,6 +6750,21 @@
         const groupIds = [];
         for (let i = 0; i < order.length; i++) groupIds.push(await psGroupInModal([shapeIds[i]], order[i]));
         partsId = await psGroupInModal(groupIds, PS_PARTS_GROUP);
+        // The preview goes inside PS, under PB and SDW (never at the top: shapes never cover
+        // the trims). No PS yet: PS is made around it, in its place, and goes with it on Discard.
+        step = "moving the parts into " + PS_PS_GROUP;
+        try {
+          if (!psPsGroup()) {
+            newPsId = await psGroupInModal([partsId], PS_PS_GROUP);
+            const P = kbLayerById(newPsId);
+            if (!P) throw new Error("the " + PS_PS_GROUP + " group could not be made.");
+            psPassThrough(P);
+          } else psPlacePartsInPs(kbLayerById(partsId), true);
+        } catch (e) {                                     // no preview left at the top of the document
+          await psDeleteLayerInModal(partsId);
+          if (newPsId != null) await psDeleteLayerInModal(newPsId);
+          throw e;
+        }
         try { await deselectAll(); } catch (_) {}
       }, { commandName: "KBImage — part layers" });
 
@@ -6700,7 +6773,7 @@
       params.unassigned = !!cut.labels[PS_UNASSIGNED];
       params.found = wanted.length - missing.length; params.wanted = wanted.length;
       trace("ps parts: found " + params.found + " of " + wanted.length + ", not in this photo: " + missing.join(", ") + (params.unassigned ? ", UNASSIGNED present" : ""));
-      return { layerIds: [partsId], afterSnapshotRef: null, state: { partsId: partsId } };
+      return { layerIds: [partsId, newPsId].filter(function (x) { return x != null; }), afterSnapshotRef: null, state: { partsId: partsId } };
     } catch (err) {
       const e2 = new Error("Find parts failed while " + step + ": " + ((err && err.message) || String(err)));
       e2.cause = err;
@@ -6725,17 +6798,28 @@
     if (!gt) { setStatus("bad", "Pick the garment type in step 2 first."); return; }
     const checkedNow = Array.from(psCheckedFor(gt));
     if (!checkedNow.length) { setStatus("bad", "Check at least one part to find."); return; }
-    // Accepted parts (maybe fixed by hand) are replaced only on a second click.
-    const old = psPartsGroup();
-    const oldIsPreview = old && pendingRecall && (pendingRecall.layerIds || []).indexOf(old.id) >= 0;
-    if (old && !oldIsPreview) {
+    // Accepted parts (maybe fixed by hand) are replaced only on a second click. Only the part
+    // groups go, with their KBPS part channels: never PS, PB, SDW or Backup. A PARTS group
+    // (older files) goes whole; a preview still waiting is replaced by the new run.
+    const box = psPartsBox(), P = psPsGroup();
+    const old = box && psIsPending(box.id) ? [] : (box ? [box] : []).concat(P ? psPsParts(P) : []);
+    if (old.length) {
       if (Date.now() > psPartsArmUntil) {
         psPartsArmUntil = Date.now() + 5000;
-        setStatus("bad", "This replaces the PARTS group and any hand fixes. Click Find parts again within 5 seconds to go ahead.");
+        psPartsArmNote(true);
         return;
       }
       psPartsArmUntil = 0;
-      try { await deleteLayersById([old.id]); } catch (_) {}
+      psPartsArmNote(false);
+      const names = [];
+      old.forEach(function (g) { (box && g.id === box.id ? psPsParts(g) : [g]).forEach(function (k) { names.push(String(k.name)); }); });
+      try { await deleteLayersById(old.map(function (g) { return g.id; })); } catch (_) {}
+      try {
+        await ps.core.executeAsModal(async function () {
+          for (let i = 0; i < names.length; i++) { await kbRemoveChannels(PS_PART_CH + names[i]); await kbRemoveChannels(psRawName(PS_PART_CH + names[i])); }
+        }, { commandName: "KBImage — clear part channels" });
+      } catch (e) { traceErr("ps parts: clear old part channels", e); }
+      trace("ps parts: replaced " + old.map(function (g) { return g.name; }).join(", ") + " and their part channels");
     }
     const btn = $("ps-parts-btn");
     if (btn) btn.classList.add("disabled");
@@ -7494,7 +7578,7 @@
     let gid = null;
     try {
       await ps.core.executeAsModal(async function () {
-        const old = psGroupChild(psPsGroup(), PS_BACKUP_GROUP);
+        const old = psBackupGroup();
         if (old) { await kbUnlockTreeInModal(old); await psDeleteLayerInModal(old.id); }   // a swap replaces both
         const bottom = psPsParts(psPsGroup()).slice(-1)[0];
         try { await deselectAll(); } catch (_) {}
@@ -9603,10 +9687,10 @@
       made.push(fill);
       const gid = await psGroupInModal([px.id, fill], K.group);
       made.push(gid);
-      if (old) await psDeleteLayerInModal(old.id);                  // the earlier group, replaced in place
+      const olds = old ? [old] : [];                                 // the earlier group, replaced in place
       if (kind === "buttons") {                                      // BUTTON THREAD (team: Layer 10 at 50%)
         const oldT = psTrimGroupNamed(PS_THREAD_NAME);
-        if (oldT) await psDeleteLayerInModal(oldT.id);
+        if (oldT) olds.push(oldT);
         let tOk = false;
         if (kbChannelExists(PS_THREAD_CH)) { await kbLoadChannel(PS_THREAD_CH); tOk = !!kbSelectionBounds(); try { await deselectAll(); } catch (_) {} }
         if (tOk) {
@@ -9619,7 +9703,12 @@
           await psSetBlendInModal(th.id, "normal", 50);
         }
       }
-      await psLayoutFixInModal();                                   // into PS › PB, above SDW and the parts
+      // The new group is complete: only now the earlier one goes, and from here on nothing is
+      // rolled back (a failed rollback after this delete was how PIPING went missing).
+      for (let i = 0; i < olds.length; i++) await psDeleteLayerInModal(olds[i].id);
+      made.length = 0;
+      try { await psLayoutFixInModal(); }                           // into PS › PB, above SDW and the parts
+      catch (e) { traceErr("ps trims: " + K.group + " into " + PS_PS_GROUP + " › " + PS_PB_GROUP + " (left where it is)", e); }
       trace("ps trims: built " + K.group + " (group " + gid + ") from " + srcName + " " + srcId
         + (kind === "piping" ? (bi.fallback ? ", masked to " + K.ch + " (Blend If could not separate it)" : ", garment mask pulled in " + psPipingMargin() + " px, Blend If " + bi.channel + (bi.dark ? " white " : " black ") + bi.a + "/" + bi.b)
           : psIsSamTrim(kind) ? ", masked to " + K.ch + (bi && !bi.fallback ? ", Blend If " + bi.channel + (bi.dark ? " white " : " black ") + bi.a + "/" + bi.b : " (Blend If could not separate it)")
@@ -9636,7 +9725,7 @@
   async function psBuildTrimGroup(kind, why) {
     const K = PS_TRIM_KINDS[kind];
     traceStart("Print Swap — build " + K.group + " (" + why + ")");
-    let msg = null, ok = false;
+    let msg = null, ok = false, recol = null;
     try {
       let bi = null;
       if (kind === "piping" || psIsSamTrim(kind)) {
@@ -9646,23 +9735,29 @@
         bi = await psPipingBlendIf(cleanId, K.ch);
       }
       await psMod().core.executeAsModal(async function () { await psBuildTrimGroupInModal(kind, bi); }, { commandName: "KBImage — " + K.group });
-      const recol = await psTrimColorReapply(kind);                // the trim's chosen color, on the new group
+      // The trim's saved color, on the new group. Redo (step 4 or earlier) and Start over clear
+      // the colors, so a color here was set since then; a new Find run says it is back.
+      recol = await psTrimColorReapply(kind);
       const rec = logRecordSkeleton("printswap:trim-group", { kind: kind, why: why, blendIf: bi, color: recol }, null, "channel:" + K.ch);
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
       ok = true;
+      const found = why === "accepted";
+      const back = function (group, hex) { return " " + group + " color " + hex + " put back. Click Original to remove it."; };
+      let also = "";
       if (kind === "buttons" && psTrimGroupNamed(PS_PIPING_GRP)) {
         const pr = await psBuildTrimGroup("piping", "buttons changed");
-        if (!pr.ok) trace("ps trims: PIPING rebuild after buttons: " + pr.msg);
+        if (!pr.ok) { trace("ps trims: PIPING rebuild after buttons: " + pr.msg); also = " " + pr.msg; }
+        else if (found && pr.recol) also = back(PS_PIPING_GRP, pr.recol);
       }
-      msg = K.group + " built." + (recol ? " Color " + recol + " kept." : "") + " Set trim colors in step 7.";
+      msg = K.group + " built." + (recol ? (found ? back(K.group, recol) : " Color " + recol + " kept.") : "") + also + " Set trim colors in step 7.";
       trace("ps trims: " + K.group + " built" + (bi ? (bi.fallback ? " (masked; Blend If could not separate it from the fabric)" : " (Blend If " + bi.channel + " " + bi.a + "/" + bi.b + ")") : ""));
     } catch (err) {
       traceErr("ps trims " + kind, err);
       msg = K.group + " not built: " + ((err && err.message) || String(err)) + (/missing|empty/.test(String(err && err.message)) ? " Select it by hand and use + Add." : "");
     }
     await traceFlush();
-    return { ok: ok, msg: msg };
+    return { ok: ok, msg: msg, recol: recol };
   }
   // On Accept the recall wrapper writes "Accepted — kept…" after onSettle, so the
   // trim result is shown just after it.
@@ -9798,6 +9893,16 @@
   async function psTrimColorSave() {
     try { const st = await psStateLoad(); st.trimColors = Object.assign({}, psTrimColors); st.trimLink = !!psTrimLink; await psStateSave(st); }
     catch (e) { traceErr("ps trims: save colors", e); }
+  }
+  // Redo on step 4 or earlier, and Start over: every trim color and "Buttons same as piping"
+  // go, in the panel and in the saved state (the document and the plug-in folder), so trims
+  // built after this are Original.
+  async function psTrimColorsClear() {
+    psTrimColors = {}; psTrimLink = false;
+    try { const st = await psStateLoad(); delete st.trimColors; delete st.trimLink; await psStateSave(st); }
+    catch (e) { traceErr("ps trims: clear colors", e); }
+    try { psTrimColorRender(); psTrimLinkSync(); } catch (_) {}
+    trace("ps trims: colors and Buttons same as piping cleared");
   }
   // A color on these trims at once (no Accept): each trim's old pair deleted and a new
   // Trim lightness + Color Fill 1 built. Returns the per-trim measurements.
@@ -10056,21 +10161,31 @@
   function psTrimNames() {
     return [PS_THREAD_NAME, PS_BUTTON_GRP].concat(Object.keys(PS_TRIM_KINDS).filter(psIsSamTrim).map(function (k) { return PS_TRIM_KINDS[k].group; })).concat([PS_PIPING_GRP]);
   }
-  // The trims at the top level, top → bottom.
+  // The trims at the top level (older files), top → bottom.
   function psTrimTopLayers() {
-    const names = [PS_THREAD_NAME, PS_BUTTON_GRP].concat(Object.keys(PS_TRIM_KINDS).filter(psIsSamTrim).map(function (k) { return PS_TRIM_KINDS[k].group; })).concat([PS_PIPING_GRP]);
-    return names.map(psTopLayerNamed).filter(Boolean).sort(function (a, b) { return psTopIndex(a) - psTopIndex(b); });
+    return psTrimNames().map(psTopLayerNamed).filter(Boolean).sort(function (a, b) { return psTopIndex(a) - psTopIndex(b); });
+  }
+  // Inside executeAsModal: `list` (layers already in group G) in this order at the top of G,
+  // each placed next to its neighbour, moving only what is out of place (never a move into
+  // the group a layer is already in).
+  function psOrderInGroup(G, list, mv) {
+    const EP = psMod().constants.ElementPlacement;
+    for (let i = 0; i < list.length; i++) {
+      const kids = Array.from(G.layers);
+      if (kids[i] && kids[i].id === list[i].id) continue;
+      if (i === 0) mv(list[0], kids[0], EP.PLACEBEFORE); else mv(list[i], list[i - 1], EP.PLACEAFTER);
+    }
   }
   // Inside executeAsModal: the team's structure, moving only what is out of place. Returns the
   // number of moves. PS is made from the first thing to go in (PARTS or the top trim), in its
-  // place; an accepted top-level PARTS (step 6, or an older file) gives its part groups to PS
+  // place; an accepted PARTS (step 6's, in PS, or an older file's at the top) gives its part groups to PS
   // (replacing the ones there) and goes; top-level trims go into PB (made when needed); then
-  // PB is first in PS, SDW right under it, the parts below.
+  // PB is first in PS, SDW right under it, the parts below, Backup at the bottom.
   function psPassThrough(g) { try { const BM = psMod().constants.BlendMode; if (g && BM) g.blendMode = BM.PASSTHROUGH; } catch (e) { traceErr("ps layout: Pass Through", e); } }
   async function psLayoutFixInModal() {
     const EP = psMod().constants.ElementPlacement;
     const trims = psTrimTopLayers();
-    const parts = psTopLayerNamed(PS_PARTS_GROUP), partsOk = !!(parts && parts.layers && !psIsPending(parts.id));
+    const parts = psPartsBox(), partsOk = !!(parts && parts.layers && !psIsPending(parts.id));
     let P = psPsGroup();
     if (!P && !trims.length && !partsOk) return 0;
     let moved = 0;
@@ -10078,20 +10193,21 @@
       try { l.move(rel, where); moved++; }
       catch (e) { throw new Error("Moving " + l.name + " into " + PS_PS_GROUP + " failed — Photoshop said: " + ((e && e.message) || String(e))); }
     };
+    const inP = function (l) { return !!(l && l.parent && l.parent.id === P.id); };
     if (!P) {
       P = kbLayerById(await psGroupInModal([(partsOk ? parts : trims[0]).id], PS_PS_GROUP));
       if (!P) throw new Error("the " + PS_PS_GROUP + " group could not be made.");
       psPassThrough(P); moved++;
     }
     if (partsOk) {
-      const old = psPsParts(P).filter(function (g) { return g.id !== parts.id; });
-      for (let i = 0; i < old.length; i++) await psDeleteLayerInModal(old[i].id);   // replaced by the new parts
+      const old = psPsParts(P);                               // replaced by the new parts (PARTS itself is not one)
+      for (let i = 0; i < old.length; i++) await psDeleteLayerInModal(old[i].id);
       const kids = Array.from(parts.layers || []);
-      let prev = parts.parent && parts.parent.id === P.id ? parts : null;
+      let prev = inP(parts) ? parts : null;
       for (let i = 0; i < kids.length; i++) {
         if (prev) mv(kids[i], prev, EP.PLACEAFTER);
         else {
-          const bk = psGroupChild(P, PS_BACKUP_GROUP), last = P.layers.length ? P.layers[P.layers.length - 1] : null;
+          const bk = psBackupGroup(), last = P.layers.length ? P.layers[P.layers.length - 1] : null;
           if (bk) mv(kids[i], bk, EP.PLACEBEFORE); else if (last) mv(kids[i], last, EP.PLACEAFTER); else mv(kids[i], P, EP.PLACEINSIDE);
         }
         prev = kids[i];
@@ -10105,25 +10221,68 @@
         B = kbLayerById(await psGroupInModal([tr[0].id], PS_PB_GROUP));
         if (!B) throw new Error("the " + PS_PB_GROUP + " group could not be made.");
         psPassThrough(B); moved++;
-        if (!B.parent || B.parent.id !== P.id) mv(B, P, EP.PLACEINSIDE);
+        if (!inP(B)) mv(B, P, EP.PLACEINSIDE);
       }
       for (let i = 0; i < tr.length; i++) if (!tr[i].parent || tr[i].parent.id !== B.id) mv(tr[i], B, EP.PLACEINSIDE);
     }
     if (B) {                                                 // top → bottom: BUTTON THREAD, BUTTON, the SAM trims, PIPING
-      const want = psTrimNames().map(function (n) { return psChildNamed(B, n); }).filter(Boolean);
-      const now = Array.from(B.layers).filter(function (l) { return want.indexOf(l) >= 0; });
-      if (want.some(function (l, i) { return !now[i] || now[i].id !== l.id; })) for (let i = want.length - 1; i >= 0; i--) mv(want[i], B, EP.PLACEINSIDE);
-      if (!P.layers[0] || P.layers[0].id !== B.id) mv(B, P, EP.PLACEINSIDE);
+      psOrderInGroup(B, psTrimNames().map(function (n) { return psChildNamed(B, n); }).filter(Boolean), mv);
+      if (P.layers[0].id !== B.id) mv(B, P.layers[0], EP.PLACEBEFORE);
     }
     const S = psSdwGroup();
     if (S) {
       const at = B ? 1 : 0;
-      if (!P.layers[at] || P.layers[at].id !== S.id) { if (B) mv(S, B, EP.PLACEAFTER); else mv(S, P, EP.PLACEINSIDE); }
+      if (!P.layers[at] || P.layers[at].id !== S.id) { if (B) mv(S, B, EP.PLACEAFTER); else mv(S, P.layers[0], EP.PLACEBEFORE); }
     }
-    const bk = psGroupChild(P, PS_BACKUP_GROUP);
+    const bk = psBackupGroup();
     if (bk && P.layers[P.layers.length - 1].id !== bk.id) mv(bk, P.layers[P.layers.length - 1], EP.PLACEAFTER);   // Backup: always at the bottom
     if (moved) trace("ps layout: " + moved + " move(s): " + PS_PS_GROUP + " › " + PS_PB_GROUP + ", " + PS_SDW_GROUP + ", parts, " + PS_BACKUP_GROUP);
     return moved;
+  }
+
+  // ----- PB guard: steps 5 to 9 never delete, move or regroup anything inside PB ----------
+  // PB's children (id and name), top → bottom; null when there is no PB.
+  function psPbSnap() {
+    const B = psPbGroup();
+    if (!B) return null;
+    try { return Array.from(B.layers).map(function (l) { return { id: l.id, name: String(l.name) }; }); } catch (_) { return null; }
+  }
+  // After a step 5 to 9 action: PB's children as in `before`? If not, what was moved out or
+  // renamed is put back in place; a deleted layer cannot come back. Returns the red status
+  // line ("PB changed: PIPING missing"), or null when PB is unchanged.
+  async function psPbCheck(before) {
+    if (!before || !before.length) return null;
+    const now = psPbSnap() || [];
+    if (now.length === before.length && now.every(function (c, i) { return c.id === before[i].id && c.name === before[i].name; })) return null;
+    const gone = [], back = [];
+    let reordered = 0;
+    const added = now.filter(function (c) { return !before.some(function (b) { return b.id === c.id; }); }).map(function (c) { return c.name; });
+    try {
+      await psMod().core.executeAsModal(async function () {
+        const B = psPbGroup(), EP = psMod().constants.ElementPlacement, list = [];
+        for (let i = 0; i < before.length; i++) {
+          const l = kbLayerById(before[i].id);
+          if (!l || !B) { gone.push(before[i].name); continue; }
+          if (String(l.name) !== before[i].name) { try { l.name = before[i].name; back.push(before[i].name); } catch (_) {} }
+          if (!l.parent || l.parent.id !== B.id) { l.move(B, EP.PLACEINSIDE); if (back.indexOf(before[i].name) < 0) back.push(before[i].name); }
+          list.push(l);
+        }
+        if (B) psOrderInGroup(B, list, function (l, rel, where) { l.move(rel, where); reordered++; });
+      }, { commandName: "KBImage — put PB back" });
+    } catch (e) { traceErr("ps PB guard: put back", e); }
+    const msg = "PB changed: " + [gone.length ? gone.join(", ") + " missing" : "", back.length ? back.join(", ") + " put back" : (reordered ? "order put back" : ""), added.length ? added.join(", ") + " added" : ""]
+      .filter(Boolean).join("; ") + ".";
+    trace("ps PB guard: " + msg + " Before: " + before.map(function (b) { return b.name + " " + b.id; }).join(", ") + "; after: " + now.map(function (b) { return b.name + " " + b.id; }).join(", "));
+    return msg;
+  }
+  // The panel actions of steps 5 to 9 (Accept / Re-run / Discard when the preview waiting is theirs).
+  const PS_PB_GUARDED = { "ps-make-gray": 1, "ps-find-parts": 1, "ps-part-check": 1, "ps-part-add": 1, "ps-edit-part": 1, "ps-toggle-shapes": 1,
+    "ps-choose-print": 1, "ps-apply-print": 1, "ps-print-reset": 1, "ps-part-adjust": 1, "ps-print-rotate": 1, "ps-build-shade": 1, "ps-finish": 1 };
+  function psPbGuarded(name, srcEl) {
+    if (PS_PB_GUARDED[name]) return true;
+    if (name === "ps-edge-apply" || name === "ps-edge-refine") return !!(srcEl && srcEl.getAttribute && srcEl.getAttribute("data-target") === "part");
+    if (/^recall-/.test(name)) { const d = pendingRecall && pendingRecall.descriptor; return !!(d && d.psStep >= 5); }
+    return false;
   }
 
   // =======================================================================
@@ -10479,7 +10638,7 @@
     try {
       if (!psMod().app.activeDocument) return "locked";
       garment = kbChannelExists(PS_GARMENT_CH);
-      const g = psGreyExactLayer(); grey = !!(g && !psIsPending(g.id));
+      grey = psGreyExactLayers().some(function (g) { return !psIsPending(g.id); });   // a new preview over it changes nothing
       parts = psPartsAccepted();
     } catch (_) { return "locked"; }
     const white = psHasAcceptedTop(PS_BG_NAME) || (psHasAcceptedTop(PS_MODEL_NAME) && psHasAcceptedTop(PS_WHITE_NAME));
@@ -10566,6 +10725,20 @@
     descriptor.psStep = step;                              // named when this preview blocks another step
     if (psOpenStep !== step) psStepOpen(step);
     const orig = descriptor.onSettle;
+    if (step >= 5) {                                        // a preview that changed PB is stopped: PB put back, the preview deleted
+      const run0 = descriptor.execute;
+      descriptor.execute = async function (params) {
+        const pb = psPbSnap();
+        const r = await run0(params);
+        const bad = await psPbCheck(pb);
+        if (bad) {
+          const ids = (r && Array.isArray(r.layerIds) ? r.layerIds : []).filter(function (x) { return x != null; });
+          if (ids.length) { try { await deleteLayersById(ids); } catch (_) {} }
+          throw new Error(bad);
+        }
+        return r;
+      };
+    }
     const afterFinish = step === 7 || step === 8;          // Print / Shading after Finish: MERGED follows
     if (afterFinish) {
       const run = descriptor.execute;
@@ -11904,10 +12077,16 @@
     const fn = ACTIONS[name];
     if (!fn) { try { console.warn(TAG, "no handler for action:", name); } catch (_) {} return; }
     const run = falProgBegin(srcEl);                     // the progress bar goes under this button
+    let pb = null;                                       // steps 5 to 9: PB checked before and after
+    try { if (psPbGuarded(name, srcEl)) pb = psPbSnap(); } catch (_) {}
+    const end = function () {
+      falProgEnd(run);
+      if (pb) psPbCheck(pb).then(function (bad) { if (bad) setTimeout(function () { setStatus("bad", bad); }, 0); }, function () {});
+    };
     let r;
-    try { r = fn(srcEl); } catch (e) { falProgEnd(run); throw e; }
-    if (r && typeof r.then === "function") r.then(function () { falProgEnd(run); }, function () { falProgEnd(run); });
-    else falProgEnd(run);
+    try { r = fn(srcEl); } catch (e) { end(); throw e; }
+    if (r && typeof r.then === "function") r.then(end, end);
+    else end();
   };
 
   // =======================================================================

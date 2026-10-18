@@ -1,7 +1,7 @@
 {
   "id": "com.komar.kbimage.printswap",
   "name": "KBImage Print Swap",
-  "version": "0.20.0",
+  "version": "0.20.1",
   "main": "index.html",
   "manifestVersion": 5,
   "host": [
