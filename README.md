@@ -4,7 +4,7 @@ A Photoshop panel that swaps the print on a garment photo for the retouching tea
 
 ![KBImage Print Swap: the finished swap with the panel](docs/screenshots/15-step9-finish.png)
 
-**Version** 0.19.0 · **Plug-in id** `com.komar.kbimage.printswap` · **Photoshop** 2022 (23.3) or newer · **Tested on** Photoshop 2025 (v26) and Photoshop 2026 (v27)
+**Version** 0.20.0 · **Plug-in id** `com.komar.kbimage.printswap` · **Photoshop** 2022 (23.3) or newer · **Tested on** Photoshop 2025 (v26) and Photoshop 2026 (v27)
 
 ## Install (UXP Developer Tool)
 

@@ -1396,6 +1396,7 @@
     let k = kind;
     if (k === "bad" && !STATUS_ERROR.test(String(text || ""))) k = "warn";   // a step to do first: orange, not an error
     if (k === "ok" && /MERGED could not be rebuilt/.test(String(text || ""))) k = "bad";   // kept, but the final failed: an error
+    try { if (typeof psStepNoteSync === "function") psStepNoteSync(k, text); } catch (_) {}
     const s = $("ps-status");
     if (s) {
       const sh = statusShort(text);
@@ -5026,20 +5027,20 @@
       await deleteLayersById([old.id]);
       await ps.core.executeAsModal(async function () { const n = kbLayerById(newId); if (n) { try { n.visible = oldVis; } catch (_) {} } }, { commandName: "KBImage — GREY exact" });
       let shadeMsg = "";
-      const sg = psTopLayerNamed(PS_SHADE_GROUP), sv = psTopLayerNamed(PS_VEIL_NAME);
+      const sg = psSdwGroup() || psTopLayerNamed(PS_SHADE_GROUP), sv = psTopLayerNamed(PS_VEIL_NAME);
       if (sg && psPartsGroup()) {
         step = "building the shading again";
         setStatus("busy", "Building the shading again with " + p.targetHex + "…");
         let gVis = true, vVis = true;
         try { gVis = sg.visible; } catch (_) {}
         try { if (sv) vVis = sv.visible; } catch (_) {}
-        const sh = await executePsShade(psShadeParams());      // clears every old GREY group and veil first
+        const sh = await executePsShade(psShadeParams());      // clears SDW and any old GREY group and veil first
         await ps.core.executeAsModal(async function () {
           const g = kbLayerById(sh.layerIds[0]), v = kbLayerById(sh.layerIds[1]);
           if (g) { try { g.visible = gVis; } catch (_) {} }
           if (v) { try { v.visible = vVis; } catch (_) {} }
         }, { commandName: "KBImage — shading visibility" });
-        shadeMsg = " Shading (GREY group, GREY copy 3) built again with it.";
+        shadeMsg = " Shading (SDW) built again with it.";
       }
       let mm = null;
       if (!psMergedHeld && psMergedAccepted()) { step = "redoing MERGED"; mm = await psMergedRebuild(true); }
@@ -5591,16 +5592,52 @@
   }
 
   // ----- Layers ------------------------------------------------------------------
+  // The team's structure: PS (top level, under MERGED VERSIONS and HAIR) holds PB (the
+  // trims), SDW (step 8) and the part groups, in that order. A v0.19 document (top-level
+  // trims, PARTS, the GREY group) still works; psLayoutFixInModal moves it into PS. Step 6's
+  // preview is a top-level PARTS group until Accept moves its parts into PS.
+  const PS_PS_GROUP = "PS", PS_PB_GROUP = "PB", PS_SDW_GROUP = "SDW", PS_BACKUP_GROUP = "Backup";
+  function psNotPart(n) { return n === PS_PB_GROUP || n === PS_SDW_GROUP || n === PS_BACKUP_GROUP; }   // PS's own groups
+  function psGroupChild(g, name) {
+    try { for (let i = 0; i < g.layers.length; i++) if (String(g.layers[i].name) === name && g.layers[i].layers) return g.layers[i]; } catch (_) {}
+    return null;
+  }
+  function psPsGroup() { const l = psTopLayerNamed(PS_PS_GROUP); return l && l.layers ? l : null; }
+  function psPbGroup() { const p = psPsGroup(); return p ? psGroupChild(p, PS_PB_GROUP) : null; }
+  function psSdwGroup() { const p = psPsGroup(); return p ? psGroupChild(p, PS_SDW_GROUP) : null; }
+  // The part groups in PS (every group but PB, SDW and Backup), top → bottom.
+  function psPsParts(p) {
+    const out = [];
+    try { for (let i = 0; i < p.layers.length; i++) { const l = p.layers[i]; if (l.layers && !psNotPart(String(l.name))) out.push(l); } } catch (_) {}
+    return out;
+  }
+  // A trim group (or BUTTON THREAD) by name: in PB, else at the top level (older files).
+  function psTrimGroupNamed(name) {
+    const b = psPbGroup();
+    if (b) { try { for (let i = 0; i < b.layers.length; i++) if (String(b.layers[i].name) === name) return b.layers[i]; } catch (_) {} }
+    return psTopLayerNamed(name);
+  }
+  function psAccepted(l) { return !!(l && !psIsPending(l.id)); }
+  // Step 6 is done: an accepted PARTS (older files) or a part group in PS.
+  function psPartsAccepted() {
+    const t = psTopLayerNamed(PS_PARTS_GROUP);
+    if (t && t.layers && !psIsPending(t.id)) return true;
+    const p = psPsGroup();
+    return !!p && psPsParts(p).some(function (g) { return !psIsPending(g.id); });
+  }
+  // What holds the part groups: a top-level PARTS (older files, or step 6's preview), else
+  // PS when it has a part group in it.
   function psPartsGroup() {
     try {
       const top = psMod().app.activeDocument.layers;
       for (let i = 0; i < top.length; i++) if (top[i] && String(top[i].name) === PS_PARTS_GROUP && top[i].layers) return top[i];
     } catch (_) {}
-    return null;
+    const p = psPsGroup();
+    return p && psPsParts(p).length ? p : null;
   }
   function psPartGroup(name) {
     const pg = psPartsGroup();
-    if (!pg) return null;
+    if (!pg || psNotPart(name)) return null;
     try { for (let i = 0; i < pg.layers.length; i++) if (String(pg.layers[i].name) === name && pg.layers[i].layers) return pg.layers[i]; } catch (_) {}
     return null;
   }
@@ -5750,7 +5787,7 @@
   // before Find parts, the picked type's list.
   function psPartNames() {
     const pg = psPartsGroup(), out = [];
-    if (pg) { try { for (let i = 0; i < pg.layers.length; i++) if (pg.layers[i] && pg.layers[i].layers) out.push(String(pg.layers[i].name)); } catch (_) {} }
+    if (pg) { try { for (let i = 0; i < pg.layers.length; i++) { const n = String(pg.layers[i] && pg.layers[i].name); if (pg.layers[i] && pg.layers[i].layers && !psNotPart(n)) out.push(n); } } catch (_) {} }
     if (out.length) return out;
     const t = psGtypeById(psGarmentType);
     return t ? psGtypeParts(t).map(function (p) { return p.n; }) : psWithLeftNeck(PS_PART_ORDER, false);
@@ -5991,7 +6028,7 @@
   // What a type change after step 2 deletes (steps 3–9): plug-in layers by their exact
   // names at the top of the stack, and the trim and part channels. KBPS garment stays.
   function psGtypeResetTargets() {
-    const names = [PS_CLEAN_NAME, PS_EXACT_LAYER, PS_PARTS_GROUP, PS_SHADE_GROUP, PS_VEIL_NAME, PS_MERGED_NAME, PS_MERGED_GROUP, PS_HAIR_NAME, PS_THREAD_NAME]
+    const names = [PS_CLEAN_NAME, PS_EXACT_LAYER, PS_PS_GROUP, PS_PARTS_GROUP, PS_SHADE_GROUP, PS_VEIL_NAME, PS_MERGED_NAME, PS_MERGED_GROUP, PS_HAIR_NAME, PS_THREAD_NAME]
       .concat(Object.keys(PS_TRIM_KINDS).map(function (k) { return PS_TRIM_KINDS[k].group; }));
     const layers = [];
     names.forEach(function (n) { const l = psTopLayerNamed(n); if (l && layers.indexOf(l) < 0) layers.push(l); });
@@ -6072,11 +6109,11 @@
       case 1: return { layers: [PS_BG_NAME, PS_MODEL_NAME, PS_WHITE_NAME], chans: [PS_PERSON_CH, PS_HAIR_CH] };
       case 2: return { layers: [], chans: [PS_GARMENT_CH, PS_HANDS_CH] };
       case 3: return { layers: [PS_CLEAN_NAME], chans: [] };
-      case 4: return { layers: trimGroups.concat([PS_THREAD_NAME]), chans: trimChs.concat([PS_THREAD_CH]) };
+      case 4: return { layers: [PS_PB_GROUP].concat(trimGroups, [PS_THREAD_NAME]), chans: trimChs.concat([PS_THREAD_CH]) };
       case 5: return { layers: [PS_EXACT_LAYER], chans: [] };
-      case 6: return { layers: [PS_PARTS_GROUP], chans: psAllPartNames().map(function (nm) { return PS_PART_CH + nm; }) };
-      case 7: return { layers: [], chans: [], prints: true };
-      case 8: return { layers: [PS_SHADE_GROUP].concat(PS_SHADE_NAMES), chans: [] };   // GREY, GREY copy 3 and strays (GREY copy …)
+      case 6: return { layers: [PS_PARTS_GROUP], partsInPs: true, chans: psAllPartNames().map(function (nm) { return PS_PART_CH + nm; }) };
+      case 7: return { layers: [PS_BACKUP_GROUP], chans: [], prints: true };
+      case 8: return { layers: [PS_SDW_GROUP, PS_SHADE_GROUP].concat(PS_SHADE_NAMES), chans: [] };   // SDW; older files: GREY, GREY copy 3 and strays
       default: return { layers: [PS_MERGED_NAME, PS_MERGED_GROUP, PS_HAIR_NAME], chans: [] };
     }
   }
@@ -6087,11 +6124,17 @@
     let prints = false;
     let top = [];
     try { top = Array.from(psMod().app.activeDocument.layers); } catch (_) {}
+    // Layers are looked for at the top level, in PS and in PB. From step 4 on, PS goes whole.
+    const P = psPsGroup(), B = psPbGroup();
+    const add = function (l) { if (l && !layers.some(function (x) { return x.id === l.id; })) layers.push(l); };
+    if (P && from <= 4) add(P);
+    const pool = top.concat(P && from > 4 ? Array.from(P.layers) : [], B && from > 4 ? Array.from(B.layers) : []);
     for (let n = from; n <= PS_STEP_COUNT; n++) {
       const own = psStepOwn(n);
       own.layers.forEach(function (nm) {
-        top.forEach(function (l) { if (String(l.name) === nm && layers.indexOf(l) < 0) layers.push(l); });
+        pool.forEach(function (l) { if (String(l.name) === nm && !(P && l.id === P.id)) add(l); });
       });
+      if (own.partsInPs && P && from > 4) psPsParts(P).forEach(add);
       own.chans.forEach(function (c) { [c, psRawName(c)].forEach(function (x) { if (chans.indexOf(x) < 0 && kbChannelExists(x)) chans.push(x); }); });
       if (own.prints) prints = true;
     }
@@ -6104,7 +6147,7 @@
       } catch (_) {}
     }
     const printIds = [];
-    if (prints && !layers.some(function (l) { return String(l.name) === PS_PARTS_GROUP; })) {
+    if (prints && from > 6) {                               // the parts stay: only their prints go
       psPartNames().forEach(function (nm) { psPrintIds(nm).forEach(function (id) { printIds.push(id); }); });
     }
     layers.forEach(function (l) { names.push(String(l.name)); });
@@ -6193,6 +6236,7 @@
         for (let i = 0; i < tg.chans.length; i++) { try { await kbRemoveChannels(tg.chans[i]); } catch (_) {} }
         // Show again what a cleared later step had hidden on a step that stays.
         if (rp.from <= 8) { const g = psGreyExactLayer(); if (g) { try { g.visible = true; } catch (_) {} } }   // Shading hid GREY exact
+        if (!rp.all && rp.from <= 8) await psLayoutFixInModal();        // an older file: trims and parts into PS
         const b = psBgLayer(); if (b) { try { b.visible = true; } catch (_) {} }                                 // Finish hid BG LIGHTEN
       }, { commandName: "KBImage — Print Swap " + (rp.all ? "start over" : "redo step " + rp.from) });
       if (psBgLayer()) { const c = $("ps-bg-on"); if (c) c.checked = true; }
@@ -6274,13 +6318,14 @@
       psSetPartPill(name);
     } catch (e) { traceErr("ps: select " + name + " in Layers", e); }
   }
-  // The part a layer belongs to: walk up to the child of PARTS. null when it is not in a part.
+  // The part a layer belongs to: walk up to the child of PS (or of PARTS). null when it is not in a part.
   function psPartOfLayer(layer) {
     let l = layer, guard = 0;
     while (l && guard++ < 20) {
       const p = l.parent;
       if (!p) return null;
       if (String(p.name) === PS_PARTS_GROUP && !p.parent) return l.layers ? String(l.name) : null;
+      if (String(p.name) === PS_PS_GROUP && !p.parent) { const n = String(l.name); return l.layers && !psNotPart(n) ? n : null; }
       l = p;
     }
     return null;
@@ -6710,6 +6755,12 @@
         sourceRef: "garment:" + PS_GARMENT_CH + " gray:" + PS_EXACT_LAYER,
         paramsProvider: partsParams,
         execute: executePsParts,
+        onSettle: async function (state, accepted) {            // Accept: the part groups into PS (under PB and SDW)
+          if (!accepted) return null;
+          try { await ps.core.executeAsModal(async function () { await psLayoutFixInModal(); }, { commandName: "KBImage — PS group" }); }
+          catch (e) { traceErr("ps parts: into PS", e); return "Accepted, but the parts could not be moved into PS (" + ((e && e.message) || String(e)) + ")."; }
+          return null;
+        },
       });
       trace("ps parts: done");
       const miss = p.missing || [];
@@ -7395,6 +7446,12 @@
         op: op, params: p, targetLayerId: null,
         sourceRef: "print:" + p.printName + " scale:" + p.scalePct,
         paramsProvider: params, execute: executePsPrint,
+        onSettle: async function (state, accepted) {           // Accept: the Backup group follows this print
+          if (!accepted) return null;
+          try { await psBackupUpdate(); }
+          catch (e) { traceErr("ps backup", e); return "Accepted, but the Backup group could not be updated (" + ((e && e.message) || String(e)) + ")."; }
+          return null;
+        },
       });
       psPartScaleTyped = null;
       setStatus("ok", (sameScale ? "Print applied: " : keepAngles ? "Replaced with " : "Placed ") + p.printName + " at " + p.scalePct + "% in " + p.placed + " part(s)"
@@ -7409,6 +7466,75 @@
       try { psPrintRefreshPart(); psPartsRefreshList(); updateDocInfo(); } catch (_) {}
       await traceFlush();
     }
+  }
+
+  // Backup (hidden, at the bottom of PS, under the part groups), made again on every accepted
+  // Apply print: "PRINT source · <file>" (the print file placed as a smart object at 100%,
+  // its own pixels, untouched) and "PRINT tiled · <file>" (one layer over the garment's box at
+  // the whole-garment scale and angle on the shared grid, as Continuous tiles it, so a part
+  // patched from it lines up). Hidden, so MERGED never takes it.
+  async function psBackupUpdate() {
+    const P = psPsGroup(), parts = P ? psPsParts(P) : [];
+    if (!P || !parts.length || !psPrint) return null;
+    const ps = psMod(), EP = ps.constants.ElementPlacement;
+    const name = psPrint.name;
+    const tex = await psPrintTexture();
+    const state = await psStateLoad();
+    const gb = await psGarmentBox(0), r = gb.rect, bw = r.right - r.left, bh = r.bottom - r.top;
+    if (bw * bh > 64 * 1000 * 1000) throw new Error("the garment is very large (" + bw + " × " + bh + " px).");
+    const scale = state.scalePct || 100, rot = Number(state.rotDeg) || 0;
+    const tileW = Math.max(2, Math.round(tex.layerW * scale / 100)), tileH = Math.max(2, Math.round(tex.layerH * scale / 100));
+    const buf = kbComposeTile(bw, bh, r.left, r.top, tex.data, tex.width, tex.height, tex.components, tileW, tileH, rot, tileW / 2, tileH / 2, null);
+    for (let i = 3; i < buf.length; i += 4) {               // opaque PNG only (transparent ones landed shifted)
+      const al = buf[i];
+      if (al < 255) { const k = al / 255; buf[i - 3] = Math.round(buf[i - 3] * k + 255 * (1 - k)); buf[i - 2] = Math.round(buf[i - 2] * k + 255 * (1 - k)); buf[i - 1] = Math.round(buf[i - 1] * k + 255 * (1 - k)); buf[i] = 255; }
+    }
+    const file = await kbRgbaToFile(buf, bw, bh);
+    const srcTok = await fsLocal().createSessionToken(psPrint.entry);
+    let gid = null;
+    try {
+      await ps.core.executeAsModal(async function () {
+        const old = psGroupChild(psPsGroup(), PS_BACKUP_GROUP);
+        if (old) { await kbUnlockTreeInModal(old); await psDeleteLayerInModal(old.id); }   // a swap replaces both
+        const bottom = psPsParts(psPsGroup()).slice(-1)[0];
+        try { await deselectAll(); } catch (_) {}
+        await kbSelectLayerById(bottom.id);
+        try { await selectRGBChannel(); } catch (_) {}
+        // the source: placed, kept a smart object, set back to 100% if Photoshop scaled it
+        await ps.action.batchPlay([{ _obj: "placeEvent", target: { _path: srcTok },
+          freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
+          offset: { _obj: "offset", horizontal: { _unit: "pixelsUnit", _value: 0 }, vertical: { _unit: "pixelsUnit", _value: 0 } },
+          _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
+        const src = ps.app.activeDocument.activeLayers[0];
+        if (!src) throw new Error("the print file did not place.");
+        try { await renameActiveLayer("PRINT source · " + name); } catch (_) {}
+        try {
+          const b = src.bounds, cw = Number(b.right) - Number(b.left), ch = Number(b.bottom) - Number(b.top);
+          if (cw > 0 && ch > 0 && (Math.abs(cw - tex.layerW) > 0.5 || Math.abs(ch - tex.layerH) > 0.5)) {
+            await ps.action.batchPlay([{ _obj: "transform", _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
+              freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
+              width: { _unit: "percentUnit", _value: tex.layerW / cw * 100 }, height: { _unit: "percentUnit", _value: tex.layerH / ch * 100 },
+              _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
+          }
+        } catch (e) { traceErr("ps backup: source at 100%", e); }
+        const srcId = src.id;
+        src.move(bottom, EP.PLACEAFTER);
+        // the tiled copy over the garment's box
+        await kbSelectLayerById(srcId);
+        const tId = await kbPlaceFileInModal(file, "PRINT tiled · " + name, r);
+        const t = kbLayerById(tId);
+        if (t) t.move(kbLayerById(srcId), EP.PLACEAFTER);
+        gid = await psGroupInModal([srcId, tId], PS_BACKUP_GROUP);
+        const g = kbLayerById(gid);
+        if (g) {
+          const P2 = psPsGroup(), last = P2.layers[P2.layers.length - 1];
+          if (last.id !== g.id) g.move(last, EP.PLACEAFTER);  // under the part groups
+          try { g.visible = false; } catch (_) {}
+        }
+      }, { commandName: "KBImage — Backup" });
+    } finally { await kbDeleteFile(file); }
+    trace("ps backup: " + name + " (source at 100%, tiled " + bw + "x" + bh + " at " + scale + "%, " + rot + "°), group " + gid);
+    return gid;
   }
 
   // Whole-garment rotation: ↺ / ↻ by data-deg, data-set="0" back to 0°, data-set="field"
@@ -7658,18 +7784,85 @@
       strengthPct: kbNum("ps-sh-strength", 100, 0, 100),
       foldContrast: kbNum("ps-sh-fold", 1.0, 0.1, 9.99),
       smoothPx:   Math.round(kbNum("ps-sh-smooth", PS_SMOOTH_PX, 0, 100)),
-      highlightsPct: kbNum("ps-sh-hi", 0, 0, 100),
-      brightness: kbNum("ps-sh-brightness", 7, -150, 150),
-      contrast:   kbNum("ps-sh-contrast", 19, -50, 100),
-      exposure:   kbNum("ps-sh-exposure", 0.10, -20, 20),
-      offset:     kbNum("ps-sh-offset", -0.0026, -0.5, 0.5),
-      gamma:      kbNum("ps-sh-gamma", 0.96, 0.01, 9.99),
-      burnPct:    kbNum("ps-sh-burn", 10, 0, 100),
-      veilPct:    kbNum("ps-sh-veil", 0, 0, 100),
+      lightPct:   kbNum("ps-sh-light", 50, 0, 100),
+      burnPct:    kbNum("ps-sh-burn", 40, 0, 100),
       warm:       readPills("pills-ps-sh-warm", "on") !== "off",
       ground:     psTone.ground || null,
       ringPx:     psShadeRingPx(),
+      lightContrast: kbNum("ps-sh-light-c", 28, -50, 100),
+      l2In:       psNums("ps-sh-l2-in", [39, 0.58, 255]),
+      l2Out:      psNums("ps-sh-l2-out", [0, 199]),
+      edgeAmt:    kbNum("ps-sh-edge-amt", 15, 0, 100),
+      deepAmt:    kbNum("ps-sh-deep-amt", 10, 0, 100),
+      featherPx:  kbNum("ps-sh-feather", psShadeLongFrac(0.0025), 0, 250),
     };
+  }
+  // "39 / 0.58 / 255" → numbers; a missing or bad one keeps its default.
+  function psNums(id, defs) {
+    const parts = String((($(id) || {}).value) || "").split(/[\s\/,]+/).filter(function (x) { return x !== ""; });
+    return defs.map(function (d, i) { const v = Number(parts[i]); return parts[i] != null && isFinite(v) ? v : d; });
+  }
+  // A fraction of the document's long edge in px (0.0025 → 10 px at 4000 px), at least 1.
+  function psShadeLongFrac(f) {
+    let L = 4000; try { const d = psMod().app.activeDocument; if (d) L = Math.max(Math.round(d.width), Math.round(d.height)); } catch (_) {}
+    return Math.max(1, Math.round(L * f * 10) / 10);
+  }
+  // Fold contrast → Brightness/Contrast 1's contrast: 1.0 = 0 (no change), 2.0 = 50.
+  function psFoldToContrast(fold) { return Math.max(-50, Math.min(100, Math.round((Number(fold) - 1) * 50))); }
+  // Color Balance 1 midtones [Cyan/Red, Magenta/Green, Yellow/Blue]: toward the print ground
+  // with Warm shadows On (±15 at most); -8 Yellow/Blue when the ground could not be read; 0 Off.
+  function psColorBalanceMid(warm, ground) {
+    if (!warm) return [0, 0, 0];
+    const c = ground ? kbParseHex(ground) : null;
+    if (!c) return [0, 0, -8];
+    const m = (c[0] + c[1] + c[2]) / 3, k = 40 / 255;
+    const cl = function (v) { return Math.max(-15, Math.min(15, Math.round(v))); };
+    return [cl((c[0] - m) * k), 0, cl((c[2] - m) * k)];
+  }
+  // Pure: the fold masks from GREY exact (px over gb.rect, garment alpha gb.alpha), on a grid
+  // over the document (long edge at most 1500 px), 0…255:
+  //   edge (Light 1): where the gray changes fastest (|value − local mean|), the top edgeAmt%
+  //     of the garment; deep (Levels 2): the darkest deepAmt% of the garment (lightly smoothed).
+  //   Both feathered by featherPx and kept inside the garment.
+  function psFoldMasks(px, gb, o) {
+    const docW = gb.docW, docH = gb.docH, L = Math.max(docW, docH), f = Math.min(1, 1500 / L);
+    const gw = Math.max(2, Math.round(docW * f)), gh = Math.max(2, Math.round(docH * f)), N = gw * gh;
+    const rect = gb.rect, rw = rect.right - rect.left, med = o.median;
+    const lum = new Float32Array(N).fill(med), inG = new Uint8Array(N);
+    for (let y = 0; y < gh; y++) {
+      const Y = Math.min(docH - 1, Math.floor(y / f)); if (Y < rect.top || Y >= rect.bottom) continue;
+      for (let x = 0; x < gw; x++) {
+        const X = Math.min(docW - 1, Math.floor(x / f)); if (X < rect.left || X >= rect.right) continue;
+        const k = (Y - rect.top) * rw + (X - rect.left);
+        if (gb.alpha[k] > 127 && px.valid[k]) { const q = y * gw + x; inG[q] = 1; lum[q] = (px.rgb[k * 3] * 77 + px.rgb[k * 3 + 1] * 150 + px.rgb[k * 3 + 2] * 29) / 256; }
+      }
+    }
+    const sm = kbBoxBlur(lum, gw, gh, Math.max(1, Math.round(L * 0.0005 * f)));
+    const mean = kbBoxBlur(sm, gw, gh, Math.max(2, Math.round(L * 0.004 * f)));
+    const edgeS = new Float32Array(N);
+    for (let q = 0; q < N; q++) edgeS[q] = Math.abs(sm[q] - mean[q]);
+    // the value that leaves `pct`% of the garment above (top) or below (bottom) it
+    // (edges: some change at all; deep folds: darker than the garment's median gray, so flat
+    // fabric gives no mask however the ties fall)
+    const cut = function (score, pct, top) {
+      const vals = []; for (let q = 0; q < N; q++) if (inG[q]) vals.push(score[q]);
+      if (!vals.length || !(pct > 0)) return null;
+      vals.sort(function (a, b) { return a - b; });
+      const i = Math.min(vals.length - 1, Math.max(0, Math.round((top ? 1 - pct / 100 : pct / 100) * (vals.length - 1))));
+      return { t: vals[i], mid: vals[(vals.length - 1) >> 1] };
+    };
+    const fr = Math.max(0, Math.round((o.featherPx || 0) * f));
+    const make = function (score, pct, top) {
+      const c = cut(score, pct, top);
+      let m = new Float32Array(N), on = 0, nG = 0;
+      for (let q = 0; q < N; q++) { if (!inG[q]) continue; nG++; if (c && (top ? score[q] >= c.t && score[q] > 0.5 : score[q] <= c.t && score[q] < c.mid - 0.5)) { m[q] = 255; on++; } }
+      if (fr > 0) m = kbBoxBlur(kbBoxBlur(m, gw, gh, Math.max(1, Math.round(fr / 2))), gw, gh, Math.max(1, Math.round(fr / 2)));
+      const out = new Uint8Array(N);
+      for (let q = 0; q < N; q++) out[q] = inG[q] ? Math.max(0, Math.min(255, Math.round(m[q]))) : 0;
+      return { plane: out, pct: nG ? Math.round(on / nG * 1000) / 10 : 0 };
+    };
+    const e = make(edgeS, o.edgeAmt, true), d = make(sm, o.deepAmt, false);
+    return { edge: e.plane, deep: d.plane, edgePct: e.pct, deepPct: d.pct, gw: gw, gh: gh };
   }
   // Edge ring: about 0.15% of the long edge (6 px on 4000 px).
   const PS_RING_FRAC = 0.0015;
@@ -7677,23 +7870,10 @@
     let L = 4000; try { const d = psMod().app.activeDocument; if (d) L = Math.max(Math.round(d.width), Math.round(d.height)); } catch (_) {}
     return Math.max(1, Math.round(L * PS_RING_FRAC));
   }
-  // Warm shadows: the print's ground hue at about 10% saturation (HSB, full brightness).
-  const PS_WARM_SAT = 0.10;
-  function psWarmTint(hex) {
-    const c = hex ? kbParseHex(hex) : null;
-    if (!c) return null;
-    const mx = Math.max(c[0], c[1], c[2]), mn = Math.min(c[0], c[1], c[2]);
-    if (mx - mn < 6) return null;                                   // a neutral ground: nothing to warm toward
-    let h;
-    if (mx === c[0]) h = ((c[1] - c[2]) / (mx - mn)) % 6; else if (mx === c[1]) h = (c[2] - c[0]) / (mx - mn) + 2; else h = (c[0] - c[1]) / (mx - mn) + 4;
-    h = (h * 60 + 360) % 360;
-    const s = PS_WARM_SAT, v = 1, C = v * s, X = C * (1 - Math.abs((h / 60) % 2 - 1)), mm = v - C;
-    const t = h < 60 ? [C, X, 0] : h < 120 ? [X, C, 0] : h < 180 ? [0, C, X] : h < 240 ? [0, X, C] : h < 300 ? [X, 0, C] : [C, 0, X];
-    return t.map(function (x) { return Math.round((x + mm) * 255); });
-  }
-  // ----- Shading layers: one GREY group and one veil, never more ---------------------
-  // Step 8's own layer names. At the top level only the GREY group and GREY copy 3 belong
-  // there; the others are strays left by an older or interrupted run.
+
+  // ----- Shading layers: one SDW group, never more ------------------------------------
+  // Older files' step 8 names at the top level (the GREY group, GREY copy 3 and strays left
+  // by an interrupted run): cleared with SDW, never built again.
   const PS_SHADE_NAMES = [PS_VEIL_NAME, "GREY copy", "GREY copy 2", "GREY highlights", "Levels shading", "Levels highlights", "Levels burn", "Warm shadows"];
   function psShadeTopLayers() {
     const out = [];
@@ -7704,6 +7884,7 @@
         if (PS_SHADE_NAMES.indexOf(n) >= 0 || (n === PS_SHADE_GROUP && t[i].layers)) out.push(t[i]);
       }
     } catch (_) {}
+    const sd = psSdwGroup(); if (sd) out.push(sd);
     return out;
   }
   function psVeilCount() { return psShadeTopLayers().filter(function (l) { return String(l.name) === PS_VEIL_NAME; }).length; }
@@ -7759,11 +7940,12 @@
   const PS_SMOOTH_THRESHOLD = 15;                     // Surface Blur threshold (levels): fold edges stay
   // Fold smoothing in px (Surface Blur radius). Dark → Light tested on the blue pajama to the cream floral.
   const PS_SMOOTH_PX = 2;
+  // Fold light % (Light 1) and Burn % (Levels 2): first guesses until tested.
   const PS_TONE_PRESETS = {
-    "dark-light":  { fold: 2.0, smooth: 2, hi: 0,  strength: 100 },
-    "light-light": { fold: 1.0, smooth: 2, hi: 0,  strength: 100 },
-    "light-dark":  { fold: 1.2, smooth: 2, hi: 25, strength: 100 },
-    "dark-dark":   { fold: 1.6, smooth: 2, hi: 15, strength: 100 },
+    "dark-light":  { fold: 2.0, smooth: 2, strength: 100, light: 60, burn: 50 },
+    "light-light": { fold: 1.0, smooth: 2, strength: 100, light: 50, burn: 40 },
+    "light-dark":  { fold: 1.2, smooth: 2, strength: 100, light: 70, burn: 30 },
+    "dark-dark":   { fold: 1.6, smooth: 2, strength: 100, light: 70, burn: 40 },
   };
   function psToneBlank() { return { docId: null, src: "light", print: "light", srcBy: "auto", printBy: "auto", Ls: null, Lp: null, autoSrc: null, autoPrint: null, printName: null, ground: null, measured: false, busy: false }; }
   let psTone = psToneBlank();
@@ -7790,7 +7972,8 @@
     set("ps-sh-strength", t.strength);
     set("ps-sh-fold", t.fold.toFixed(1));
     set("ps-sh-smooth", t.smooth);
-    set("ps-sh-hi", t.hi);
+    set("ps-sh-light", t.light);
+    set("ps-sh-burn", t.burn);
   }
   // L* (0…100) of an sRGB 8-bit value, by table.
   let psLinTable = null;
@@ -7891,7 +8074,7 @@
     psToneFill();
     psToneFaceSync();
     const t = PS_TONE_PRESETS[psToneKey()];
-    setStatus("ok", psToneText() + ": Fold contrast " + t.fold.toFixed(1) + ", Fold smoothing " + t.smooth + " px, Highlights " + t.hi + "%, Shading strength " + t.strength + "%. "
+    setStatus("ok", psToneText() + ": Shading strength " + t.strength + "%, Fold contrast " + t.fold.toFixed(1) + ", Fold smoothing " + t.smooth + " px, Fold light " + t.light + "%, Burn " + t.burn + "%. "
       + (pendingRecall && pendingRecall.descriptor && pendingRecall.descriptor.op === "printswap:shade" ? "Re-run to use it." : "Build shading to use it."));
   }
   // Build shading / Re-run: the toggles' pick into the document (only when it changed).
@@ -7934,9 +8117,9 @@
   }
   // Inside executeAsModal: an adjustment layer just above layer `afterId`, masked
   // to the garment (made with the garment selection loaded). Throws Photoshop's exact error.
-  async function psMakeAdjustmentInModal(name, type, values, afterId) {
+  async function psMakeAdjustmentInModal(name, type, values, afterId, maskCh) {
     const ps = psMod();
-    await kbLoadChannel(PS_GARMENT_CH);
+    await kbLoadChannel(maskCh || PS_GARMENT_CH);
     await kbSelectLayerById(afterId);
     try {
       await ps.action.batchPlay(
@@ -7973,36 +8156,55 @@
     let acc = 0; for (let v = 0; v < 256; v++) { acc += h[v]; if (acc >= n / 2) return v; }
     return 255;
   }
+  const PS_SHADOW_NAME = "SHADOW";
+  const PS_LIGHT_CH = "KBPS_tmp_light", PS_DEEP_CH = "KBPS_tmp_deep";
+  // Step 8: the SDW group in PS (garment mask), bottom → top: SHADOW (GREY exact, Fold
+  // smoothing, median → white, desaturated; Multiply at Shading strength, locked) with
+  // Color Balance 1, Brightness/Contrast 1 and Selective Color 1 clipped to it; Selective
+  // Color 2 (garment mask); Light 1 (fold edges mask) and Levels 2 (deepest folds mask).
   async function executePsShade(params) {
     const ps = psMod();
     const doc = ps.app.activeDocument;
     if (!doc) throw new Error("Open a Photoshop document first.");
     if (!psGreyExactLayer()) throw new Error("there is no " + PS_EXACT_LAYER + " layer (step 5).");
-    if (!psPartsGroup()) throw new Error("there is no PARTS group (step 6).");
+    if (!psPartsGroup()) throw new Error("there are no parts (step 6).");
     const EP = ps.constants && ps.constants.ElementPlacement;
     let step = "clearing old shading";
-    let groupId = null, veilId = null;
+    let sdwId = null;
     try {
-      // Never more than one: every old GREY group and GREY copy 3 goes first (unlocked).
+      // Never more than one: SDW, and an older file's GREY group, GREY copy 3 and strays, go first (unlocked).
       params.cleared = await psShadeCleanup();
       await psToneSaveInDoc();
-      // The garment's median gray in GREY exact, inside KBPS garment (Levels: median → white).
+      step = "moving the trims and parts into " + PS_PS_GROUP;
+      await ps.core.executeAsModal(async function () { params.moved = await psLayoutFixInModal(); }, { commandName: "KBImage — PS group" });
+      if (!psPsGroup() || !psPsParts(psPsGroup()).length) throw new Error("there are no part groups in " + PS_PS_GROUP + ".");
       step = "measuring the garment's median gray";
       setStatus("busy", "Measuring the garment's median gray…");
       const gb = await psGarmentBox(0);
-      let med = null;
-      await ps.core.executeAsModal(async function () { med = psMedianLuma(await psReadLayerRgb(psGreyExactLayer().id, gb.rect), gb.alpha); },
+      let px = null;
+      await ps.core.executeAsModal(async function () { px = await psReadLayerRgb(psGreyExactLayer().id, gb.rect); },
         { commandName: "KBImage — read " + PS_EXACT_LAYER });
+      const med = psMedianLuma(px, gb.alpha);
       if (med == null) throw new Error(PS_EXACT_LAYER + " has no pixels inside KBPS garment.");
       params.median = Math.max(2, Math.min(253, med));
-      step = "copying " + PS_EXACT_LAYER;
+      params.contrast = psFoldToContrast(params.foldContrast);
+      params.cb = psColorBalanceMid(params.warm, params.ground);
+      params.warmBy = !params.warm ? "off" : (params.ground ? "on" : "unmeasured");
+      step = "finding the folds";
+      setStatus("busy", "Finding the fold edges and the deepest folds…");
+      const fm = psFoldMasks(px, gb, params);
+      params.edgePct = fm.edgePct; params.deepPct = fm.deepPct;
+      await psPlaneToChannel(fm.edge, fm.gw, fm.gh, gb.docW, gb.docH, PS_LIGHT_CH);
+      await psPlaneToChannel(fm.deep, fm.gw, fm.gh, gb.docW, gb.docH, PS_DEEP_CH);
+      step = "copying " + PS_EXACT_LAYER + " as " + PS_SHADOW_NAME;
       setStatus("busy", "Building the shading…");
       await ps.core.executeAsModal(async function () {
         try { await deselectAll(); } catch (_) {}
         // Every layer by a fresh lookup (never an id from an earlier run), checked before use.
-        const grey = psGreyExactLayer(), parts = psPartsGroup();
+        const grey = psGreyExactLayer(), P = psPsGroup();
         if (!grey) throw new Error("there is no " + PS_EXACT_LAYER + " layer (step 5).");
-        if (!parts) throw new Error("there is no PARTS group (step 6).");
+        const firstPart = P ? psPsParts(P)[0] : null;
+        if (!firstPart) throw new Error("there are no part groups in " + PS_PS_GROUP + ".");
         const must = function (id, name) {
           const l = id == null ? null : kbLayerById(id);
           if (!l) throw new Error(name + " is not in the document any more.");
@@ -8012,24 +8214,17 @@
           must(id, name);
           if (!(await kbSelectLayerById(id))) throw new Error(name + " could not be selected.");
         };
-        const dup = async function (rel, name) {
-          if (!rel) throw new Error("the layer to put " + name + " above is not in the document any more.");
-          let l = null;
-          try { l = await grey.duplicate(rel, EP.PLACEBEFORE, name); }
-          catch (e) { throw new Error("Duplicating " + PS_EXACT_LAYER + " as " + name + " failed — Photoshop said: " + ((e && e.message) || String(e))); }
-          await kbUnlockTreeInModal(l);                  // copies are never locked (only GREY is, below)
-          try { if (l.isClippingMask) l.isClippingMask = false; } catch (_) {}
-          try { l.visible = true; } catch (_) {}          // GREY exact is hidden after a build: its copies must not be
-          return l;
+        const cmd = async function (desc, what) {
+          try { await ps.action.batchPlay([Object.assign({}, desc, { _options: { dialogOptions: "dontDisplay" } })], { synchronousExecution: true }); }
+          catch (e) { throw new Error(what + " failed — Photoshop said: " + ((e && e.message) || String(e))); }
         };
-        // An adjustment clipped to the layer under it (the shading map), never the print.
         // Edge ring: KBPS garment grown and shrunk by ringPx, the band between (feathered),
-        // kept as a temp channel and filled with the median gray on each shading copy, so the
-        // dark cut-out edge of GREY exact never prints as an outline.
+        // filled with the median gray on SHADOW, so the dark cut-out edge of GREY exact never
+        // prints as an outline.
         step = "making the edge ring";
         const RING = "KBPS_tmp_ring", RA = "KBPS_tmp_ringA", RB = "KBPS_tmp_ringB";
-        const sizeSel = async function (verb, px) {
-          await ps.action.batchPlay([{ _obj: verb, by: { _unit: "pixelsUnit", _value: px }, selectionModifyEffectAtCanvasBounds: false,
+        const sizeSel = async function (verb, n) {
+          await ps.action.batchPlay([{ _obj: verb, by: { _unit: "pixelsUnit", _value: n }, selectionModifyEffectAtCanvasBounds: false,
             _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
         };
         params.ringBy = "off";
@@ -8047,37 +8242,18 @@
         } catch (e) { traceErr("ps shade: edge ring", e); try { await deselectAll(); } catch (_) {} }
         try { await kbRemoveChannels(RA); } catch (_) {}
         try { await kbRemoveChannels(RB); } catch (_) {}
-        const ring = async function (l, name) {
-          if (params.ringBy !== "on") return;
-          await kbLoadChannel(RING);
-          await pick(l.id, name);
-          try { await selectRGBChannel(); } catch (_) {}
-          try {
-            await ps.action.batchPlay([{ _obj: "fill", using: { _enum: "fillContents", _value: "color" },
-              color: { _obj: "RGBColor", red: params.median, grain: params.median, blue: params.median },
-              opacity: { _unit: "percentUnit", _value: 100 }, mode: { _enum: "blendMode", _value: "normal" },
-              _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
-          } catch (e) { throw new Error("Filling the edge ring on " + name + " failed — Photoshop said: " + ((e && e.message) || String(e))); }
-          try { await deselectAll(); } catch (_) {}
-        };
-        const clipped = async function (name, type, values, afterId) {
-          must(afterId, "the layer under " + name);
-          const id = await psMakeAdjustmentInModal(name, type, values, afterId);
-          await pick(id, name);
-          await psClipActiveInModal();
-          return id;
-        };
-        // Bottom to top, each straight above the previous.
-        const src = await dup(parts, "GREY");
-        const mul = await dup(src, "GREY copy");
+        // SHADOW, straight above the top part group.
+        let sh = null;
+        try { sh = await grey.duplicate(firstPart, EP.PLACEBEFORE, PS_SHADOW_NAME); }
+        catch (e) { throw new Error("Duplicating " + PS_EXACT_LAYER + " as " + PS_SHADOW_NAME + " failed — Photoshop said: " + ((e && e.message) || String(e))); }
+        await kbUnlockTreeInModal(sh);
+        try { if (sh.isClippingMask) sh.isClippingMask = false; } catch (_) {}
+        try { sh.visible = true; } catch (_) {}            // GREY exact is hidden after a build: its copy must not be
+        await pick(sh.id, PS_SHADOW_NAME);
+        try { await selectRGBChannel(); } catch (_) {}
         params.smoothBy = params.smoothPx > 0 ? null : "off";
-        if (params.smoothPx > 0) {                       // Fold smoothing on GREY copy's own pixels: visible, unlocked, selected, RGB targeted
-          step = "smoothing GREY copy (Surface Blur " + params.smoothPx + " px)";
-          try { mul.visible = true; } catch (_) {}
-          await kbUnlockTreeInModal(mul);
-          await pick(mul.id, "GREY copy");
-          try { await selectRGBChannel(); } catch (_) {}
-          try { await deselectAll(); } catch (_) {}
+        if (params.smoothPx > 0) {
+          step = "smoothing " + PS_SHADOW_NAME + " (Surface Blur " + params.smoothPx + " px)";
           try {
             await ps.action.batchPlay([{ _obj: "surfaceBlur", radius: { _unit: "pixelsUnit", _value: params.smoothPx }, threshold: PS_SMOOTH_THRESHOLD,
               _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
@@ -8091,109 +8267,95 @@
             } catch (e2) { traceErr("ps shade: Gaussian Blur refused too, no fold smoothing", e2); params.smoothBy = "none"; }
           }
         }
-        step = "filling the edge ring on GREY copy";
-        await ring(mul, "GREY copy");
-        // GREY copy's chain, all clipped to it: Levels shading (median → white), then the
-        // team's Brightness/Contrast 1 and Exposure 1. They shape the shading map only.
-        step = "making Levels shading";
-        const lv = await clipped("Levels shading", "levels", psLevelsValues(0, params.median, 1 / params.foldContrast), mul.id);
-        step = "making Brightness/Contrast 1 (clipped)";
-        const bc = await clipped("Brightness/Contrast 1", "brightnessEvent",
-          { brightness: params.brightness, center: params.contrast, useLegacy: true }, lv);
-        step = "making Exposure 1 (clipped)";
-        const ex = await clipped("Exposure 1", "exposure",
-          { presetKind: { _enum: "presetKindType", _value: "presetKindCustom" }, exposure: params.exposure, offset: params.offset, gammaCorrection: params.gamma }, bc);
-        // Warm shadows: the folds tinted toward the print's ground (Color mode, clipped):
-        // flat fabric is white in the map and stays white, so the print's colors do not move.
-        let warmId = null;
-        const tint = params.warm ? psWarmTint(params.ground) : null;
-        params.warmBy = !params.warm ? "off" : (tint ? "on" : (params.ground ? "neutral" : "unmeasured"));
-        let chainTop = ex;
-        if (tint) {
-          step = "making Warm shadows (clipped)";
-          await pick(ex, "Exposure 1");
-          warmId = await psMakeClippedInModal("Warm shadows", { _obj: "make", _target: [{ _ref: "contentLayer" }],
-            using: { _obj: "contentLayer", name: "Warm shadows", type: { _obj: "solidColorLayer", color: { _obj: "RGBColor", red: tint[0], grain: tint[1], blue: tint[2] } } },
-            _options: { dialogOptions: "dontDisplay" } });
-          await psSetBlendInModal(warmId, "color", 100);
-          params.warmHex = psHex(tint);
-          chainTop = warmId;
+        if (params.ringBy === "on") {
+          step = "filling the edge ring on " + PS_SHADOW_NAME;
+          await kbLoadChannel(RING);
+          await pick(sh.id, PS_SHADOW_NAME);
+          try { await selectRGBChannel(); } catch (_) {}
+          await cmd({ _obj: "fill", using: { _enum: "fillContents", _value: "color" },
+            color: { _obj: "RGBColor", red: params.median, grain: params.median, blue: params.median },
+            opacity: { _unit: "percentUnit", _value: 100 }, mode: { _enum: "blendMode", _value: "normal" } }, "Filling the edge ring on " + PS_SHADOW_NAME);
+          try { await deselectAll(); } catch (_) {}
         }
-        step = "copying " + PS_EXACT_LAYER + " (highlights)";
-        const hi = await dup(must(chainTop, "the top of GREY copy's chain"), "GREY highlights");
-        step = "filling the edge ring on GREY highlights";
-        await ring(hi, "GREY highlights");
-        step = "making Levels highlights";
-        const hlv = await clipped("Levels highlights", "levels", psLevelsValues(params.median, 255, 1), hi.id);
-        step = "copying " + PS_EXACT_LAYER + " (Linear Burn)";
-        const burn = await dup(must(hlv, "Levels highlights"), "GREY copy 2");
-        step = "filling the edge ring on GREY copy 2";
-        await ring(burn, "GREY copy 2");
         try { await kbRemoveChannels(RING); } catch (_) {}
-        step = "making Levels burn";                     // flat fabric → white: Linear Burn leaves it as it is
-        const blv = await clipped("Levels burn", "levels", psLevelsValues(0, params.median, 1), burn.id);
-        step = "grouping GREY";
-        const inGroup = [[src.id, "GREY"], [mul.id, "GREY copy"], [lv, "Levels shading"], [bc, "Brightness/Contrast 1"], [ex, "Exposure 1"]]
-          .concat(warmId != null ? [[warmId, "Warm shadows"]] : [])
-          .concat([[hi.id, "GREY highlights"], [hlv, "Levels highlights"], [burn.id, "GREY copy 2"], [blv, "Levels burn"]]);
-        inGroup.forEach(function (x) { must(x[0], x[1]); });
-        groupId = await psGroupInModal(inGroup.map(function (x) { return x[0]; }), PS_SHADE_GROUP);
-        must(groupId, "The " + PS_SHADE_GROUP + " group");
-        try { const g = kbLayerById(groupId); if (g && ps.constants.BlendMode) g.blendMode = ps.constants.BlendMode.PASSTHROUGH; }
-        catch (e) { traceErr("ps shade: GREY group Pass Through", e); }
-        step = "copying " + PS_EXACT_LAYER + " (veil)";
-        const veil = await dup(must(groupId, "The " + PS_SHADE_GROUP + " group"), PS_VEIL_NAME);   // straight above the GREY group, under the trims
-        veilId = veil.id;
-        step = "keeping the trims above the GREY group and the veil";
-        params.trimsMoved = await psTrimOrderFixInModal();
+        step = "mapping the median gray to white on " + PS_SHADOW_NAME;
+        await pick(sh.id, PS_SHADOW_NAME);
+        try { await selectRGBChannel(); } catch (_) {}
+        await cmd(Object.assign({ _obj: "levels" }, psLevelsValues(0, params.median, 1)), "Levels on " + PS_SHADOW_NAME);
+        await cmd({ _obj: "desaturate" }, "Desaturate on " + PS_SHADOW_NAME);
+        // Clipped to SHADOW: they shape the shading only, never the print.
+        const clipped = async function (name, type, values, afterId) {
+          must(afterId, "the layer under " + name);
+          const id = await psMakeAdjustmentInModal(name, type, values, afterId);
+          await pick(id, name);
+          const l = kbLayerById(id); let c = false; try { c = !!l.isClippingMask; } catch (_) {}
+          if (!c) await psClipActiveInModal();
+          return id;
+        };
+        // Not clipped: on everything under them (the prints and SHADOW), masked.
+        const free = async function (name, type, values, afterId, maskCh) {
+          must(afterId, "the layer under " + name);
+          const id = await psMakeAdjustmentInModal(name, type, values, afterId, maskCh);
+          const l = kbLayerById(id);
+          try { if (l && l.isClippingMask) l.isClippingMask = false; } catch (e) { traceErr("ps shade: unclip " + name, e); }
+          return id;
+        };
+        step = "making Color Balance 1 (clipped)";
+        const cb = await clipped("Color Balance 1", "colorBalance", { shadowLevels: [0, 0, 0], midtoneLevels: params.cb, highlightLevels: [0, 0, 0], preserveLuminosity: true }, sh.id);
+        step = "making Brightness/Contrast 1 (clipped)";
+        const bc = await clipped("Brightness/Contrast 1", "brightnessEvent", { brightness: 0, center: params.contrast, useLegacy: true }, cb);
+        step = "making Selective Color 1 (clipped)";
+        const sc1 = await clipped("Selective Color 1", "selectiveColor", { method: { _enum: "correctionMethod", _value: "relative" } }, bc);
+        step = "making Selective Color 2";
+        const sc2 = await free("Selective Color 2", "selectiveColor", { method: { _enum: "correctionMethod", _value: "relative" } }, sc1, PS_GARMENT_CH);
+        step = "making Light 1 (fold edges)";
+        const light = await free("Light 1", "brightnessEvent", { brightness: 0, center: params.lightContrast, useLegacy: false }, sc2, PS_LIGHT_CH);
+        step = "making Levels 2 (deepest folds)";
+        const burn = await free("Levels 2", "levels", psLevelsValues(params.l2In[0], params.l2In[2], params.l2In[1], params.l2Out), light, PS_DEEP_CH);
         step = "setting blend modes";
-        [[mul.id, "GREY copy"], [hi.id, "GREY highlights"], [burn.id, "GREY copy 2"], [veilId, PS_VEIL_NAME]].forEach(function (x) { must(x[0], x[1]); });
-        await psSetBlendInModal(mul.id, "multiply", params.strengthPct);
-        await psSetBlendInModal(hi.id, "screen", params.highlightsPct);
-        await psSetBlendInModal(burn.id, "linearBurn", params.burnPct);
-        await psSetBlendInModal(veilId, "normal", params.veilPct);
-        step = "masking to the garment";
-        await psMaskToGarmentInModal(mul.id);
-        await psMaskToGarmentInModal(hi.id);
-        await psMaskToGarmentInModal(burn.id);
-        await psMaskToGarmentInModal(veilId);
-        step = "hiding and locking GREY";
-        [mul, hi, burn, veil].forEach(function (l) { try { l.visible = true; } catch (_) {} });
-        try { const g = kbLayerById(groupId); if (g) g.visible = true; } catch (_) {}
-        try { src.visible = false; } catch (e) { traceErr("ps shade: hide GREY", e); }
-        try { src.allLocked = true; } catch (e) { traceErr("ps shade: lock GREY", e); }
+        await psSetBlendInModal(sh.id, "multiply", params.strengthPct);
+        await psSetBlendInModal(light, "normal", params.lightPct);
+        await psSetBlendInModal(burn, "normal", params.burnPct);
+        step = "grouping " + PS_SDW_GROUP;
+        sdwId = await psGroupInModal([sh.id, cb, bc, sc1, sc2, light, burn], PS_SDW_GROUP);
+        const g = must(sdwId, "The " + PS_SDW_GROUP + " group");
+        psPassThrough(g);
+        step = "masking " + PS_SDW_GROUP + " to the garment";
+        await psMaskToGarmentInModal(sdwId);
+        step = "keeping " + PS_PB_GROUP + " above " + PS_SDW_GROUP;
+        await psLayoutFixInModal();
+        step = "locking " + PS_SHADOW_NAME;
+        try { g.visible = true; } catch (_) {}
+        try { const l = kbLayerById(sh.id); if (l) l.allLocked = true; } catch (e) { traceErr("ps shade: lock SHADOW", e); }
         try { grey.visible = false; } catch (_) {}            // out of the way, not deleted
-        // the veil and every copy unlocked (checked: a lock left by Photoshop is cleared by id)
-        for (const c of [mul, hi, burn, veil]) {
-          const l = kbLayerById(c.id); if (!l) continue;
-          await kbUnlockTreeInModal(l);
-          let still = false; try { still = !!(l.allLocked || l.pixelsLocked || l.positionLocked || l.transparentPixelsLocked); } catch (_) {}
-          if (still) traceErr("ps shade: " + l.name + " is still locked", new Error("lock did not clear"));
-        }
       }, { commandName: "KBImage — shading" });
-      params.veils = psVeilCount();
-      trace("ps shade: GREY group " + groupId + ", veil " + veilId + " (veils " + params.veils + "), " + JSON.stringify(params));
-      return { layerIds: [groupId, veilId], afterSnapshotRef: null, state: {} };
+      trace("ps shade: SDW group " + sdwId + ", " + JSON.stringify(params));
+      return { layerIds: [sdwId], afterSnapshotRef: null, state: {} };
     } catch (err) {
       traceErr("ps shade / " + step, err);
       const e2 = new Error("Build shading failed while " + step + ": " + ((err && err.message) || String(err)));
       e2.cause = err;
       throw e2;
+    } finally {
+      try { await ps.core.executeAsModal(async function () { await kbRemoveChannels(PS_LIGHT_CH); await kbRemoveChannels(PS_DEEP_CH); }, { commandName: "KBImage — fold masks" }); } catch (_) {}
     }
   }
 
+  // First sentence and last: what the status line shows; the rest is in Details.
   function psShadeBuiltText(p) {
-    const v = p.veils != null ? p.veils : psVeilCount();
     const pair = String(p.tone || "light-light").split("-");
-    return "Shading built: " + v + " veil" + (v === 1 ? "" : "s") + ". " + pair[0] + " garment → " + pair[1] + " print: the garment's median gray " + p.median
-      + " goes white (Levels shading, fold contrast " + Number(p.foldContrast).toFixed(1) + ", fold smoothing " + p.smoothPx + " px), so only folds darken; shading strength " + p.strengthPct
-      + "%, highlights " + p.highlightsPct + "%, veil " + p.veilPct + "%."
+    return "Paint the Light 1 and Levels 2 masks to add or remove folds."
+      + " Shading built: SDW group. " + pair[0] + " garment → " + pair[1] + " print: SHADOW (Multiply " + p.strengthPct + "%) maps the garment's median gray " + p.median
+      + " to white, so only folds darken; fold contrast " + Number(p.foldContrast).toFixed(1) + " (Brightness/Contrast 1 contrast " + p.contrast + "), fold smoothing " + p.smoothPx + " px."
       + (p.smoothBy === "gaussian" ? " Fold smoothing: Gaussian fallback (Photoshop refused Surface Blur; Gaussian Blur " + p.smoothPx / 2 + " px)."
         : (p.smoothBy === "none" ? " Fold smoothing: off (Photoshop refused Surface Blur and Gaussian Blur)." : ""))
       + (p.ringBy === "on" ? " Edge ring " + p.ringPx + " px." : (p.ringBy === "off" ? " Edge ring: off (Photoshop refused it)." : ""))
-      + (p.warmBy === "on" ? " Warm shadows toward the print ground " + p.ground + "." : (p.warmBy === "neutral" ? " Warm shadows: the print ground is neutral, no tint."
-        : (p.warmBy === "unmeasured" ? " Warm shadows: no print measured, no tint." : "")))
-      + (p.trimsMoved ? " Trims moved above the shading." : "");
+      + (p.warmBy === "on" ? " Color Balance 1 toward the print ground " + p.ground + " (Cyan/Red " + p.cb[0] + ", Yellow/Blue " + p.cb[2] + ")."
+        : (p.warmBy === "unmeasured" ? " Color Balance 1: no print ground read, Yellow/Blue -8." : " Warm shadows off: Color Balance 1 at 0."))
+      + " Light 1 " + p.lightPct + "% on the fold edges (" + p.edgePct + "% of the garment), Levels 2 " + p.burnPct + "% on the deepest folds (" + p.deepPct + "%)."
+      + (p.moved ? " Trims and parts moved into PS." : "")
+      + " Accept to keep, or change the fields and Re-run."
+      + " Re-run replaces your painting.";
   }
   async function actPsBuildShade() {
     if (generateInFlight) { kbBusyNote(); return; }
@@ -8203,12 +8365,12 @@
     if (!psGreyExactLayer()) { setStatus("bad", "Make gray and Accept " + PS_EXACT_LAYER + " first (step 5)."); return; }
     if (!psPartsGroup()) { setStatus("bad", "Find parts and Accept them first (step 6)."); return; }
     if (psOtherPending("printswap:shade")) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); return; }
-    const oldGroup = psTopLayerNamed(PS_SHADE_GROUP), oldVeil = psTopLayerNamed(PS_VEIL_NAME);
+    const oldGroup = psSdwGroup() || psTopLayerNamed(PS_SHADE_GROUP), oldVeil = psTopLayerNamed(PS_VEIL_NAME);
     const pend = (pendingRecall && pendingRecall.layerIds) || [];
     if ((oldGroup && pend.indexOf(oldGroup.id) < 0) || (oldVeil && pend.indexOf(oldVeil.id) < 0)) {
       if (Date.now() > psShadeArmUntil) {
         psShadeArmUntil = Date.now() + 5000;
-        setStatus("bad", "This replaces the GREY group and GREY copy 3, with any changes made by hand. Click Build shading again within 5 seconds to go ahead.");
+        setStatus("bad", "This replaces the shading (SDW" + (psTopLayerNamed(PS_SHADE_GROUP) || oldVeil ? ", and the old GREY group and GREY copy 3" : "") + "), with any changes made by hand, including painted masks. Click Build shading again within 5 seconds to go ahead.");
         return;
       }
       psShadeArmUntil = 0;
@@ -8223,8 +8385,8 @@
         paramsProvider: psShadeParams, execute: executePsShade,
         preDiscard: async function () { await psShadeCleanup(); },            // Re-run / a new run: every old one goes
         discard: async function () { await psShadeCleanup(); return null; },
-        reRunStatus: function (pp) { return psShadeBuiltText(pp) + " Accept to keep, or change the fields and Re-run."; } });
-      setStatus("ok", psShadeBuiltText(p) + " Accept to keep, or change the fields and Re-run.");
+        reRunStatus: function (pp) { return psShadeBuiltText(pp); } });
+      setStatus("ok", psShadeBuiltText(p));
     } catch (err) {
       traceErr("ps shade", err && err.cause ? err.cause : err);
       setStatus("bad", (err && err.message) || "Build shading failed.");
@@ -9396,11 +9558,11 @@
     const srcId = cleanId != null ? cleanId : (kind === "buttons" ? psOriginalPhotoId() : null);
     const src = srcId != null ? kbLayerById(srcId) : null;
     if (!src) throw new Error(kind === "piping" ? "PIPING needs an accepted CLEAN (step 3 Remove print)." : "no CLEAN or photo layer found.");
-    const old = psTopLayerNamed(K.group);
+    const old = psTrimGroupNamed(K.group);
     // Top of the trims → bottom: BUTTON THREAD, BUTTON, the SAM trims (LACE …), PIPING.
-    const button = psTopLayerNamed(PS_BUTTON_GRP), piping = psTopLayerNamed(PS_PIPING_GRP);
+    const button = psTrimGroupNamed(PS_BUTTON_GRP), piping = psTrimGroupNamed(PS_PIPING_GRP);
     const samOther = Object.keys(PS_TRIM_KINDS).filter(function (k) { return k !== kind && psIsSamTrim(k); })
-      .map(function (k) { return psTopLayerNamed(PS_TRIM_KINDS[k].group); }).filter(Boolean)[0] || null;
+      .map(function (k) { return psTrimGroupNamed(PS_TRIM_KINDS[k].group); }).filter(Boolean)[0] || null;
     const veil = psTopLayerNamed(PS_VEIL_NAME);
     let rel = null, where = null;
     if (old) { rel = old; where = EP.PLACEBEFORE; }
@@ -9443,7 +9605,7 @@
       made.push(gid);
       if (old) await psDeleteLayerInModal(old.id);                  // the earlier group, replaced in place
       if (kind === "buttons") {                                      // BUTTON THREAD (team: Layer 10 at 50%)
-        const oldT = psTopLayerNamed(PS_THREAD_NAME);
+        const oldT = psTrimGroupNamed(PS_THREAD_NAME);
         if (oldT) await psDeleteLayerInModal(oldT.id);
         let tOk = false;
         if (kbChannelExists(PS_THREAD_CH)) { await kbLoadChannel(PS_THREAD_CH); tOk = !!kbSelectionBounds(); try { await deselectAll(); } catch (_) {} }
@@ -9457,7 +9619,7 @@
           await psSetBlendInModal(th.id, "normal", 50);
         }
       }
-      await psTrimOrderFixInModal();                                // trims above the GREY group, the veil under them
+      await psLayoutFixInModal();                                   // into PS › PB, above SDW and the parts
       trace("ps trims: built " + K.group + " (group " + gid + ") from " + srcName + " " + srcId
         + (kind === "piping" ? (bi.fallback ? ", masked to " + K.ch + " (Blend If could not separate it)" : ", garment mask pulled in " + psPipingMargin() + " px, Blend If " + bi.channel + (bi.dark ? " white " : " black ") + bi.a + "/" + bi.b)
           : psIsSamTrim(kind) ? ", masked to " + K.ch + (bi && !bi.fallback ? ", Blend If " + bi.channel + (bi.dark ? " white " : " black ") + bi.a + "/" + bi.b : " (Blend If could not separate it)")
@@ -9489,7 +9651,7 @@
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
       ok = true;
-      if (kind === "buttons" && psTopLayerNamed(PS_PIPING_GRP)) {
+      if (kind === "buttons" && psTrimGroupNamed(PS_PIPING_GRP)) {
         const pr = await psBuildTrimGroup("piping", "buttons changed");
         if (!pr.ok) trace("ps trims: PIPING rebuild after buttons: " + pr.msg);
       }
@@ -9526,7 +9688,7 @@
   function psTrimShrink() { return Math.round(kbNum("ps-trim-shrink", 1, 0, 3)); }
   async function actPsPipingRemargin() {
     if (generateInFlight) { kbBusyNote(); return; }
-    if (!psTopLayerNamed(PS_PIPING_GRP)) { setStatus("bad", "There is no PIPING group yet. Find piping in step 4 and Accept."); return; }
+    if (!psTrimGroupNamed(PS_PIPING_GRP)) { setStatus("bad", "There is no PIPING group yet. Find piping in step 4 and Accept."); return; }
     generateInFlight = true;
     let r = null;
     try { r = await psBuildTrimGroup("piping", "edge margin " + psPipingMargin() + " px"); }
@@ -9535,7 +9697,7 @@
   }
   async function actPsTrimReshrink() {
     if (generateInFlight) { kbBusyNote(); return; }
-    if (!psTopLayerNamed(PS_BUTTON_GRP)) { setStatus("bad", "There is no BUTTON group yet. Find buttons in step 4 and Accept."); return; }
+    if (!psTrimGroupNamed(PS_BUTTON_GRP)) { setStatus("bad", "There is no BUTTON group yet. Find buttons in step 4 and Accept."); return; }
     generateInFlight = true;
     let r = null;
     try { r = await psBuildTrimGroup("buttons", "shrink mask " + psTrimShrink() + " px"); }
@@ -9581,7 +9743,7 @@
   }
   // The trim's own layer: the copy of CLEAN at the bottom of its group (named like the group).
   function psTrimBase(kind) {
-    const K = PS_TRIM_KINDS[kind], g = K ? psTopLayerNamed(K.group) : null;
+    const K = PS_TRIM_KINDS[kind], g = K ? psTrimGroupNamed(K.group) : null;
     if (!g) return null;
     const own = psChildNamed(g, K.group);
     if (own) return own;
@@ -9589,7 +9751,7 @@
   }
   // The recolor layers in the trim's group (Trim lightness, Color Fill 1, an old Hue/Saturation 1).
   function psTrimColorLayers(kind) {
-    const K = PS_TRIM_KINDS[kind], g = K ? psTopLayerNamed(K.group) : null, out = [];
+    const K = PS_TRIM_KINDS[kind], g = K ? psTrimGroupNamed(K.group) : null, out = [];
     try { const kids = g ? g.layers : []; for (let i = 0; i < kids.length; i++) { const n = String(kids[i].name); if (n === PS_TRIM_LIGHT || n === PS_TRIM_FILL || n === PS_TRIM_OLD_ADJ) out.push(kids[i]); } } catch (_) {}
     return out;
   }
@@ -9890,32 +10052,77 @@
     try { const t = psMod().app.activeDocument.layers; for (let i = 0; i < t.length; i++) if (t[i].id === l.id) return i; } catch (_) {}
     return -1;
   }
+  // The trim names, top → bottom.
+  function psTrimNames() {
+    return [PS_THREAD_NAME, PS_BUTTON_GRP].concat(Object.keys(PS_TRIM_KINDS).filter(psIsSamTrim).map(function (k) { return PS_TRIM_KINDS[k].group; })).concat([PS_PIPING_GRP]);
+  }
   // The trims at the top level, top → bottom.
   function psTrimTopLayers() {
     const names = [PS_THREAD_NAME, PS_BUTTON_GRP].concat(Object.keys(PS_TRIM_KINDS).filter(psIsSamTrim).map(function (k) { return PS_TRIM_KINDS[k].group; })).concat([PS_PIPING_GRP]);
     return names.map(psTopLayerNamed).filter(Boolean).sort(function (a, b) { return psTopIndex(a) - psTopIndex(b); });
   }
-  // Inside executeAsModal: moves only what is out of place. Returns the number of moves.
-  async function psTrimOrderFixInModal() {
+  // Inside executeAsModal: the team's structure, moving only what is out of place. Returns the
+  // number of moves. PS is made from the first thing to go in (PARTS or the top trim), in its
+  // place; an accepted top-level PARTS (step 6, or an older file) gives its part groups to PS
+  // (replacing the ones there) and goes; top-level trims go into PB (made when needed); then
+  // PB is first in PS, SDW right under it, the parts below.
+  function psPassThrough(g) { try { const BM = psMod().constants.BlendMode; if (g && BM) g.blendMode = BM.PASSTHROUGH; } catch (e) { traceErr("ps layout: Pass Through", e); } }
+  async function psLayoutFixInModal() {
     const EP = psMod().constants.ElementPlacement;
-    let trims = psTrimTopLayers();
-    if (!trims.length) return 0;
+    const trims = psTrimTopLayers();
+    const parts = psTopLayerNamed(PS_PARTS_GROUP), partsOk = !!(parts && parts.layers && !psIsPending(parts.id));
+    let P = psPsGroup();
+    if (!P && !trims.length && !partsOk) return 0;
     let moved = 0;
-    const grp = psTopLayerNamed(PS_SHADE_GROUP);
-    if (grp && trims.some(function (t) { return psTopIndex(t) > psTopIndex(grp); })) {
-      for (let i = 0; i < trims.length; i++) {                  // top → bottom, each straight above the group: their order stays
-        try { trims[i].move(grp, EP.PLACEBEFORE); moved++; }
-        catch (e) { throw new Error("Moving " + trims[i].name + " above the GREY group failed — Photoshop said: " + ((e && e.message) || String(e))); }
+    const mv = function (l, rel, where) {
+      try { l.move(rel, where); moved++; }
+      catch (e) { throw new Error("Moving " + l.name + " into " + PS_PS_GROUP + " failed — Photoshop said: " + ((e && e.message) || String(e))); }
+    };
+    if (!P) {
+      P = kbLayerById(await psGroupInModal([(partsOk ? parts : trims[0]).id], PS_PS_GROUP));
+      if (!P) throw new Error("the " + PS_PS_GROUP + " group could not be made.");
+      psPassThrough(P); moved++;
+    }
+    if (partsOk) {
+      const old = psPsParts(P).filter(function (g) { return g.id !== parts.id; });
+      for (let i = 0; i < old.length; i++) await psDeleteLayerInModal(old[i].id);   // replaced by the new parts
+      const kids = Array.from(parts.layers || []);
+      let prev = parts.parent && parts.parent.id === P.id ? parts : null;
+      for (let i = 0; i < kids.length; i++) {
+        if (prev) mv(kids[i], prev, EP.PLACEAFTER);
+        else {
+          const bk = psGroupChild(P, PS_BACKUP_GROUP), last = P.layers.length ? P.layers[P.layers.length - 1] : null;
+          if (bk) mv(kids[i], bk, EP.PLACEBEFORE); else if (last) mv(kids[i], last, EP.PLACEAFTER); else mv(kids[i], P, EP.PLACEINSIDE);
+        }
+        prev = kids[i];
       }
-      trims = psTrimTopLayers();
+      await psDeleteLayerInModal(parts.id);                 // empty now
     }
-    const veil = psTopLayerNamed(PS_VEIL_NAME), lowest = trims[trims.length - 1];
-    if (veil && psTopIndex(veil) < psTopIndex(lowest)) {        // the veil over a trim: down under them
-      const g2 = psTopLayerNamed(PS_SHADE_GROUP);
-      try { if (g2) veil.move(g2, EP.PLACEBEFORE); else veil.move(lowest, EP.PLACEAFTER); moved++; }
-      catch (e) { throw new Error("Moving GREY copy 3 under the trims failed — Photoshop said: " + ((e && e.message) || String(e))); }
+    const tr = psTrimTopLayers();
+    let B = psPbGroup();
+    if (tr.length) {
+      if (!B) {
+        B = kbLayerById(await psGroupInModal([tr[0].id], PS_PB_GROUP));
+        if (!B) throw new Error("the " + PS_PB_GROUP + " group could not be made.");
+        psPassThrough(B); moved++;
+        if (!B.parent || B.parent.id !== P.id) mv(B, P, EP.PLACEINSIDE);
+      }
+      for (let i = 0; i < tr.length; i++) if (!tr[i].parent || tr[i].parent.id !== B.id) mv(tr[i], B, EP.PLACEINSIDE);
     }
-    if (moved) trace("ps order: " + moved + " move(s), trims above the GREY group and the veil");
+    if (B) {                                                 // top → bottom: BUTTON THREAD, BUTTON, the SAM trims, PIPING
+      const want = psTrimNames().map(function (n) { return psChildNamed(B, n); }).filter(Boolean);
+      const now = Array.from(B.layers).filter(function (l) { return want.indexOf(l) >= 0; });
+      if (want.some(function (l, i) { return !now[i] || now[i].id !== l.id; })) for (let i = want.length - 1; i >= 0; i--) mv(want[i], B, EP.PLACEINSIDE);
+      if (!P.layers[0] || P.layers[0].id !== B.id) mv(B, P, EP.PLACEINSIDE);
+    }
+    const S = psSdwGroup();
+    if (S) {
+      const at = B ? 1 : 0;
+      if (!P.layers[at] || P.layers[at].id !== S.id) { if (B) mv(S, B, EP.PLACEAFTER); else mv(S, P, EP.PLACEINSIDE); }
+    }
+    const bk = psGroupChild(P, PS_BACKUP_GROUP);
+    if (bk && P.layers[P.layers.length - 1].id !== bk.id) mv(bk, P.layers[P.layers.length - 1], EP.PLACEAFTER);   // Backup: always at the bottom
+    if (moved) trace("ps layout: " + moved + " move(s): " + PS_PS_GROUP + " › " + PS_PB_GROUP + ", " + PS_SDW_GROUP + ", parts, " + PS_BACKUP_GROUP);
     return moved;
   }
 
@@ -10043,7 +10250,7 @@
       await psMod().core.executeAsModal(async function () { await psRedrawShapeInModal(t.part); }, { commandName: "KBImage — redraw part" });
       return "";
     }
-    if (PS_TRIM_KINDS[t.kind] && psTopLayerNamed(PS_TRIM_KINDS[t.kind].group)) {
+    if (PS_TRIM_KINDS[t.kind] && psTrimGroupNamed(PS_TRIM_KINDS[t.kind].group)) {
       const r = await psBuildTrimGroup(t.kind, "edges");
       return " " + r.msg;
     }
@@ -10273,7 +10480,7 @@
       if (!psMod().app.activeDocument) return "locked";
       garment = kbChannelExists(PS_GARMENT_CH);
       const g = psGreyExactLayer(); grey = !!(g && !psIsPending(g.id));
-      parts = psHasAcceptedTop(PS_PARTS_GROUP);
+      parts = psPartsAccepted();
     } catch (_) { return "locked"; }
     const white = psHasAcceptedTop(PS_BG_NAME) || (psHasAcceptedTop(PS_MODEL_NAME) && psHasAcceptedTop(PS_WHITE_NAME));
     const up = psUpValue();
@@ -10281,14 +10488,14 @@
     if (n === 1) return white ? "done" : (up === "done" || up === "skipped" || up === "kept" ? "ready" : "locked");
     if (n === 2) return garment ? "done" : (white ? "ready" : "locked");
     if (n === 3) return psAcceptedCleanId() != null ? "done" : (garment ? "ready" : "locked");
-    if (n === 4) return Object.keys(PS_TRIM_KINDS).some(function (k) { return psHasAcceptedTop(PS_TRIM_KINDS[k].group); }) ? "done" : (garment ? "ready" : "locked");
+    if (n === 4) return Object.keys(PS_TRIM_KINDS).some(function (k) { return psAccepted(psTrimGroupNamed(PS_TRIM_KINDS[k].group)); }) ? "done" : (garment ? "ready" : "locked");
     if (n === 5) return grey ? "done" : (garment ? "ready" : "locked");
     if (n === 6) return parts ? "done" : (grey ? "ready" : "locked");
     if (n === 7) {
       const printed = parts && psPartNames().some(function (nm) { return psPrintIds(nm).some(function (id) { return !psIsPending(id); }); });
       return printed ? "done" : (parts ? "ready" : "locked");
     }
-    if (n === 8) return psHasAcceptedTop(PS_SHADE_GROUP) ? "done" : (parts ? "ready" : "locked");
+    if (n === 8) return psAccepted(psSdwGroup()) || psHasAcceptedTop(PS_SHADE_GROUP) ? "done" : (parts ? "ready" : "locked");
     return psHasAcceptedTop(PS_MERGED_NAME) || psHasAcceptedTop(PS_MERGED_GROUP) ? "done" : (parts ? "ready" : "locked");
   }
   function psStepsRefresh() {
@@ -11024,7 +11231,7 @@
   // Top-level layers above layer `id` that are visible, cover ~the whole canvas and
   // are not Print Swap layers → hidden. Returns their names.
   function psIsPrintSwapLayerName(n) {
-    return n === PS_BG_NAME || n === "WHITE" || n === "MODEL" || n === PS_CLEAN_NAME || n.indexOf(PS_GREY_NAME) === 0 || n === PS_PARTS_GROUP
+    return n === PS_BG_NAME || n === "WHITE" || n === "MODEL" || n === PS_CLEAN_NAME || n.indexOf(PS_GREY_NAME) === 0 || n === PS_PARTS_GROUP || n === PS_PS_GROUP
       || n === PS_PIPING_GRP || n === PS_BUTTON_GRP || n === "BUTTON THREAD" || n.indexOf("MERGED") === 0 || n === "HAIR"
       || n.indexOf("KB") === 0 || n.indexOf("kb_") === 0;
   }
@@ -11178,6 +11385,19 @@
     }
     await kbSelectLayerById(stampId);
     return stampId;
+  }
+  // A blocked or failed run (orange / red status): the same message under the open step's
+  // button; a result or a new run clears it.
+  function psStepNoteSync(kind, text) {
+    if (kind === "busy") return;
+    const old = document.querySelectorAll(".ps-step-note");
+    for (let i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
+    if ((kind !== "bad" && kind !== "warn") || psOpenStep == null || /MERGED could not be rebuilt/.test(String(text || ""))) return;
+    const n = psOpenStep, anchor = $("ps-recall-anchor-" + n) || $("ps-recall-anchor-" + n + "p");
+    if (!anchor || !anchor.parentNode) return;
+    const el = document.createElement("div");
+    el.className = "ps-step-note"; el.textContent = statusShort(text).short;
+    anchor.parentNode.insertBefore(el, anchor);
   }
   // A failed MERGED rebuild: also shown under the button of the open step.
   function psMergedNote(text) {

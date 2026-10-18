@@ -220,7 +220,7 @@ body {
 .ps-main { display: flex; flex-direction: column; align-items: flex-end; }
 .ps-main > .ps-cost { margin-top: 3px; text-align: right; }
 .btn-primary.disabled { opacity: 0.45; cursor: not-allowed; }
-.ps-merged-note { font-size: 11px; line-height: 14px; color: var(--alert); text-align: right; margin-top: 3px; }
+.ps-merged-note, .ps-step-note { font-size: 11px; line-height: 14px; color: var(--alert); text-align: right; margin-top: 3px; }
 .ps-dirty { font-size: 11px; line-height: 14px; color: var(--accent); text-align: right; }
 .ps-trim-block > * + * { margin-top: 8px; }
 .ps-trim-block + .ps-trim-block { margin-top: 14px; }
@@ -1102,7 +1102,8 @@ code {
           <div class="field"><span class="field-label">Shading strength %</span><input id="ps-sh-strength" class="input" type="text" value="100" autocomplete="off" spellcheck="false" /></div>
           <div class="field"><span class="field-label">Fold contrast</span><input id="ps-sh-fold" class="input" type="text" value="1.0" autocomplete="off" spellcheck="false" /></div>
           <div class="field"><span class="field-label">Fold smoothing (px)</span><input id="ps-sh-smooth" class="input" type="text" value="" placeholder="auto" autocomplete="off" spellcheck="false" /></div>
-          <div class="field"><span class="field-label">Highlights %</span><input id="ps-sh-hi" class="input" type="text" value="0" autocomplete="off" spellcheck="false" /></div>
+          <div class="field"><span class="field-label">Fold light %</span><input id="ps-sh-light" class="input" type="text" value="50" autocomplete="off" spellcheck="false" /></div>
+          <div class="field"><span class="field-label">Burn %</span><input id="ps-sh-burn" class="input" type="text" value="40" autocomplete="off" spellcheck="false" /></div>
           <div class="ps-tone-row">
             <span class="field-label ps-tone-label">Warm shadows</span>
             <div id="pills-ps-sh-warm" class="pills pills-small" data-group="ps-sh-warm">
@@ -1112,13 +1113,12 @@ code {
           </div>
           <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-8"><span id="ps-set-8-arrow">▸</span> Adjust</span>
           <div id="ps-set-8" class="ps-settings hidden">
-            <div class="field"><span class="field-label">Brightness</span><input id="ps-sh-brightness" class="input" type="text" value="7" autocomplete="off" spellcheck="false" /></div>
-            <div class="field"><span class="field-label">Contrast</span><input id="ps-sh-contrast" class="input" type="text" value="19" autocomplete="off" spellcheck="false" /></div>
-            <div class="field"><span class="field-label">Exposure</span><input id="ps-sh-exposure" class="input" type="text" value="0.10" autocomplete="off" spellcheck="false" /></div>
-            <div class="field"><span class="field-label">Offset</span><input id="ps-sh-offset" class="input" type="text" value="-0.0026" autocomplete="off" spellcheck="false" /></div>
-            <div class="field"><span class="field-label">Gamma</span><input id="ps-sh-gamma" class="input" type="text" value="0.96" autocomplete="off" spellcheck="false" /></div>
-            <div class="field"><span class="field-label">Linear Burn %</span><input id="ps-sh-burn" class="input" type="text" value="10" autocomplete="off" spellcheck="false" /></div>
-            <div class="field"><span class="field-label">Veil %</span><input id="ps-sh-veil" class="input" type="text" value="0" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><span class="field-label">Light 1 contrast</span><input id="ps-sh-light-c" class="input" type="text" value="28" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><span class="field-label">Levels 2 input (black / gamma / white)</span><input id="ps-sh-l2-in" class="input" type="text" value="39 / 0.58 / 255" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><span class="field-label">Levels 2 output (black / white)</span><input id="ps-sh-l2-out" class="input" type="text" value="0 / 199" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><span class="field-label">Fold edge amount %</span><input id="ps-sh-edge-amt" class="input" type="text" value="15" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><span class="field-label">Deep fold amount %</span><input id="ps-sh-deep-amt" class="input" type="text" value="10" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><span class="field-label">Mask feather (px)</span><input id="ps-sh-feather" class="input" type="text" value="" placeholder="auto" autocomplete="off" spellcheck="false" /></div>
           </div>
           <div class="ps-main">
             <div class="btn-primary" role="button" tabindex="0" data-action="ps-build-shade">Build shading</div>
