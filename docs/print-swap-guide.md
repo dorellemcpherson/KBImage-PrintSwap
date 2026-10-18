@@ -41,7 +41,7 @@ The steps can only be as good as the files that go in.
 | 4 Trims | Check Colored / Neutral piping (picked for you, see 3f), then find piping, buttons, lace and other trims for this type. Trim colors are set in step 7. | Every trim is found and masked closely, and no skin is in KBPS piping. Fix edges with a brush on the mask. |
 | 5 Gray | Run to build the gray base. | Even gray, folds still visible, no old print showing through. |
 | 6 Parts | Uncheck any part this garment does not have, then Find parts. Parts not in the photo move to "In this style, not in this photo"; **+ Add** brings one back. | Each part found has its own group and mask (no empty groups); coverage 100%, no hairlines between parts. Parts sit below the trim groups. |
-| 7 Print and Color | Choose the print file and place it; set the trim colors. Keep **Continuous** on for all-over and ditsy prints (one fabric across all parts). | Print is at the right scale, sharp, and runs the right way on each part. With Continuous on, the pattern does not break at seams, the pocket or the placket. |
+| 7 Print and Color | Swap print to load the print file, set the scale (a suggestion is filled in), then Apply print; set the trim colors (they apply at once). Keep **Continuous** on for all-over and ditsy prints (one fabric across all parts). | Print is at the right scale, sharp, and runs the right way on each part. With Continuous on, the pattern does not break at seams, the pocket or the placket. |
 | 8 Shading | The garment → print pair (Light / Dark each) fills Fold contrast, Fold smoothing, Highlights and Shading strength; change any of them. Run to bring the folds and shadows back over the print. | The print keeps its colors, follows the folds and does not look flat, dark or pasted on. The status line says "Shading built: 1 veil". |
 | 9 Finish | Run the final clean up and stamp. | Check the whole image at 100%. MERGED matches what is below it. |
 
@@ -54,8 +54,8 @@ Every step after step 2 uses the saved garment, a channel called **KBPS garment*
 
 To change the garment, use one of these:
 
-1. **+ Add selection:** select the missing area (Lasso or any selection tool), then click + Add selection in step 2.
-2. **- Remove selection:** select the area that should not be garment, then click - Remove selection.
+1. **+ Add:** select the missing area (Lasso or any selection tool), then click + Add in step 2.
+2. **- Remove:** select the area that should not be garment, then click - Remove.
 3. **Paint the channel:** in the Channels panel, click KBPS garment and paint with white to add or black to remove. Click RGB when you are done.
 4. **Use selection as garment:** replaces the garment with your whole current selection.
 
@@ -88,14 +88,14 @@ Three different things, often confused:
 | Set up a garment style that is not in the list, for this and future files | **Template** (garment type) | Step 2: Garment type > Other, pick trims and parts, then **Save as type** | Saves the list of trims and parts under a name (e.g. "Sleep shirt"). It does not select anything in the image. |
 | Add one part this garment has that the list is missing | **Add part** | Step 2: Other > type the name > **Add part** (ALL CAPS, 2 to 3 words) | Adds a name to the parts checklist, so Find parts looks for it. |
 | Get the actual pixels selected | **Find** | Step 2 **Find garment**, step 6 **Find parts** | SAM looks at the image and makes the masks (channels) for the garment or for each checked part. |
-| Fix a mask that Find got wrong | **+ Add / - Remove selection** | Step 2 for the garment, step 6 for the selected part | Adds your selection to, or removes it from, the saved mask. |
+| Fix a mask that Find got wrong | **+ Add / - Remove** | Step 2 for the garment, step 6 for the selected part | Adds your selection to, or removes it from, the saved mask. |
 
 In short: the template and Add part decide **what** to look for. Find decides **where** it is. + Add and - Remove fix **where** by hand.
 
 Tips:
 * Pick or build the template **before** Find garment. The template decides which trims the Remove print prompt protects.
 * Only **Save as type** once a garment has worked from start to finish, so the saved template is one you trust.
-* In step 6, click a part's pill to select it, then use + Add / - Remove selection to fix only that part. **Show shapes** lets you see every part at once.
+* In step 6, click a part's pill to select it, then use + Add / - Remove to fix only that part. **Show shapes** lets you see every part at once.
 
 ## 3e. Hands over the garment
 
@@ -104,7 +104,7 @@ When the model's hands rest on the garment (holding the hem, in front of the top
 * After it finds the garment, **Find garment** asks SAM for the **hands** and takes them out of KBPS garment. The hands are saved as a channel called **KBPS hands**.
 * For long-sleeve types (the ones with a HAND TRIM part), when the hands are over the garment, it also asks SAM for the **arms**. Only arm pixels with the hands' skin color come out, so the sleeves stay in the garment.
 * The step 2 line says how many pixels were taken out and what the extra SAM calls cost: one for the hands, one more for the arms ($0.005 each). If SAM finds no hands, the garment is not changed.
-* Check the fingers at 100%. Fabric between the fingers can stay in or drop out. Fix it with + Add / - Remove selection, or paint KBPS hands (white = hand).
+* Check the fingers at 100%. Fabric between the fingers can stay in or drop out. Fix it with + Add / - Remove, or paint KBPS hands (white = hand).
 * Find piping uses KBPS hands to keep skin out (see 3f). If you change the hands after step 4, run Find piping again.
 
 ## 3f. White piping: Colored or Neutral
@@ -128,7 +128,7 @@ Skin color in the middle of the garment is left alone, so a pink or peach trim t
 * **Check at 100% zoom** before every Accept. Problems that are invisible at fit to screen show up in print.
 * **Clean masks with a brush** on the layer mask (white adds, black removes). It is faster than re-running.
 * **Re-run costs money; Discard does not.** If a result is wrong, try Re-run once. If it is still wrong, check the input first.
-* **Recolor trims with the Trim colors rows in step 7** (Original · White · Black · Custom…). It adds Trim lightness and Color Fill 1 inside the trim's group, never on the photo, and follows MERGED after Finish.
+* **Recolor trims with the Trim colors rows in step 7** (Original · White · Black · Custom…). A pick applies right away (no Accept) and Original undoes it. It adds Trim lightness and Color Fill 1 inside the trim's group, never on the photo, and follows MERGED after Finish.
 * **After any change below MERGED,** hide MERGED or rebuild it, or the change will not show.
 * **Garment not on the list?** Use "Other" in step 2 and build a template (see 3d). Do not pick the closest type; the wrong type protects the wrong trims.
 * **Save the PSD after each accepted step** so you can go back without re-running.

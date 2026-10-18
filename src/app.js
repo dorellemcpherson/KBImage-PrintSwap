@@ -95,6 +95,7 @@
       if (inner && pill.contains(inner)) pill = null;       // a checkbox inside a row: its action runs, the row is not picked
       if (pill) {
         const group = pill.closest(".pills");
+        if (group && group.classList.contains("ps-disabled")) return;   // grayed out (BUTTON while it follows PIPING)
         if (group) {
           try { console.log(TAG, "click: pill →", group.id, pill.getAttribute("data-value")); } catch (_) {}
           // Single-select within one group.
@@ -168,8 +169,7 @@
     }
   }
 
-  // Enter in a step 7 box does what its Apply does.
-  const PS_ENTER_APPLY = { "ps-print-scale": 1, "ps-print-rot-exact": 1, "ps-part-scale": 1, "ps-part-rot-exact": 1 };
+  // Enter in a step 7 box: either Scale = Apply print, either Exact angle = that angle.
   function handleKeydown(e) {
     if (e.key !== "Enter" && e.key !== " ") return;
     const t = e.target;
@@ -177,11 +177,9 @@
     const tag = (t.tagName || "").toLowerCase();
     if (e.key === "Enter" && tag === "input" && t.id === "admin-pin") { e.preventDefault(); actAdminUnlock(); return; }
     if (e.key === "Enter" && tag === "input" && t.id === "ps-target-gray") { e.preventDefault(); try { t.blur(); } catch (_) {} psGrayFromBox(); return; }
-    if (e.key === "Enter" && tag === "input" && PS_ENTER_APPLY[t.id]) {
-      const row = t.closest(".key-row"), apply = row && row.querySelector(".btn-ghost[data-action]");
-      if (apply) { e.preventDefault(); apply.click(); }
-      return;
-    }
+    if (e.key === "Enter" && tag === "input" && (t.id === "ps-print-scale" || t.id === "ps-part-scale")) { e.preventDefault(); actPsApplyPrint(); return; }
+    if (e.key === "Enter" && tag === "input" && t.id === "ps-print-rot-exact") { e.preventDefault(); actPsPrintRotate({ getAttribute: function (a) { return a === "data-set" ? "field" : null; } }); return; }
+    if (e.key === "Enter" && tag === "input" && t.id === "ps-part-rot-exact") { e.preventDefault(); actPsPartAdjust({ getAttribute: function (a) { return a === "data-set" ? "field" : null; } }); return; }
     if (tag === "input" || tag === "textarea") return;
     if (t.matches && t.matches('[role="button"], [role="tab"], .pill, .dd-option, [data-action], [data-view]')) {
       e.preventDefault();
@@ -708,7 +706,7 @@
       if (rb && rb.parentNode) { if (bar.nextSibling !== rb) rb.parentNode.insertBefore(bar, rb); return true; }
       let host = anchor;
       const p = anchor.parentNode;
-      if (p.classList && (p.classList.contains("btn-row") || p.classList.contains("key-row"))) host = p;
+      if (p.classList && (p.classList.contains("btn-row") || p.classList.contains("key-row") || p.classList.contains("ps-main"))) host = p;
       if (host.nextSibling !== bar) host.parentNode.insertBefore(bar, host.nextSibling);
       return true;
     } catch (_) { return false; }
@@ -1124,6 +1122,8 @@
   // Lock against overlapping runs: only one step (or Accept / Re-run /
   // Discard) changes the document at a time.
   let generateInFlight = false;
+  // A click while a run is going: the status line says so (no click ever does nothing).
+  function kbBusyNote() { setStatus("bad", "Wait for the current run to finish, then click again."); }
 
   // =======================================================================
   // COST COUNTER (real USD, never credits).
@@ -2382,7 +2382,7 @@
   // Recall-bar buttons. They respect the in-flight lock: Re-run makes real API
   // calls and must not overlap another run.
   async function actRecallAccept() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     generateInFlight = true;
     kbDeleteFails = [];
     try { await recallAccept(); }
@@ -2397,7 +2397,7 @@
     setStatus("bad", (was ? was.replace(/\s*$/, "") + " " : "") + note);
   }
   async function actRecallDiscard() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     generateInFlight = true;
     kbDeleteFails = [];
     let r = null;
@@ -2415,7 +2415,7 @@
     }
   }
   async function actRecallReRun() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     generateInFlight = true;
     kbDeleteFails = [];
     const rrBtns = document.querySelectorAll(".recall-rerun");
@@ -4069,7 +4069,7 @@
 
   // ----- FIND GARMENT ----------------------------------------------------------
   async function actPsFindGarment() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     const doc = ps.app.activeDocument;
     if (!doc) { setStatus("bad", "Open a Photoshop document first."); return; }
@@ -4114,7 +4114,7 @@
           estCostUsd: SAM_COST_USD * (1 + zoomCalls) }, psPhotoLayerId, "composite");
       rec.routedVia = "fal";
       await logRun(rec);
-      if (!area) throw new Error("SAM found no garment. Select it by hand, then use + Add selection.");
+      if (!area) throw new Error("SAM found no garment. Select it by hand, then use + Add.");
 
       // auto edge fix — collar and back neck added, grown into the old-garment fringe (not skin or hair).
       step = "fixing the garment edge";
@@ -4163,7 +4163,7 @@
   // ----- TOUCH UP — + / − the current selection to / from the garment ----------
   // "replace" (Use selection as garment) — the selection becomes the garment.
   async function actPsEditGarment(srcEl) {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     const dm = srcEl && srcEl.getAttribute && srcEl.getAttribute("data-mode");
@@ -4174,7 +4174,7 @@
       return;
     }
     const had = kbChannelExists(PS_GARMENT_CH);
-    if (!had && mode === "subtract") { setStatus("bad", "There is no garment yet. Click Find garment, or select it and use + Add selection."); return; }
+    if (!had && mode === "subtract") { setStatus("bad", "There is no garment yet. Click Find garment, or select it and use + Add."); return; }
     generateInFlight = true;
     traceStart("Print Swap — " + (mode === "replace" ? "selection as" : verb) + " garment");
     try {
@@ -4753,7 +4753,7 @@
   }
 
   async function actPsRemovePrint() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (!kbChannelExists(PS_GARMENT_CH)) { setStatus("bad", "Find the garment first."); return; }
@@ -4955,7 +4955,7 @@
   }
 
   async function actPsMakeGray() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (psGrayNeedsUpdate()) { await actPsUpdateGray(); return; }
@@ -5004,7 +5004,7 @@
   // so they are built again with the step 8 values (visibility kept). A MERGED from
   // Finish is redone in place. PARTS, prints and trims are not touched.
   async function actPsUpdateGray() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!kbChannelExists(PS_GARMENT_CH)) { setStatus("bad", "Find the garment first."); return; }
     if (pendingRecall && String(pendingRecall.descriptor && pendingRecall.descriptor.op).indexOf("printswap:") === 0) { setStatus("bad", "Accept or Discard the preview that is waiting first."); return; }
@@ -5760,7 +5760,7 @@
   //     pills-ps-parts, so every picker and the Layers link work as before); unchecking
   //     moves it to the second group (steps 7 to 9 skip it).
   //   In this style, not in this photo (N): the name in gray and "+ Add" (checks it, selects
-  //     it and asks for a selection; + Add selection then builds its group in team order).
+  //     it and asks for a selection; + Add then builds its group in team order).
   function psPartsRefreshList() {
     const g = $("pills-ps-parts");
     const has = !!psPartsGroup();
@@ -5798,7 +5798,7 @@
       else box.classList.add("ps-check-fixed");
       const nm = document.createElement("span"); nm.className = "ps-part-name"; nm.textContent = n;
       row.appendChild(box); row.appendChild(nm);
-      if (!kbChannelExists(PS_PART_CH + n)) { const st = document.createElement("span"); st.className = "ps-part-state ps-part-muted"; st.textContent = "select it, then + Add selection"; row.appendChild(st); }
+      if (!kbChannelExists(PS_PART_CH + n)) { const st = document.createElement("span"); st.className = "ps-part-state ps-part-muted"; st.textContent = "select it, then + Add"; row.appendChild(st); }
       g.appendChild(row);
     });
     if (outNames.length) {
@@ -5834,7 +5834,7 @@
     psSetPartPill(name);
     try { await psOnPartPicked(name); } catch (_) {}      // (it says what is selected: the + Add line comes after)
     try { await psPrintOnPartPicked(name); } catch (_) {}
-    setStatus("ok", "Select " + name + " on the photo, then click + Add selection.");
+    setStatus("ok", "Select " + name + " on the photo, then click + Add.");
   }
   function psUpdateShapesLink() {
     const a = $("ps-shapes-link");
@@ -5871,7 +5871,8 @@
     try { psNeuFieldsFill(true); } catch (_) {}            // and its Edge ring / Min line length are its own auto values
     psTone = psToneBlank();
     try { psToneFaceSync(); } catch (_) {}
-    psTrimColors = {}; psTrimColorDocId = id;               // trim colors are the document's (below)
+    psTrimColors = {}; psTrimLink = false; psTrimColorDocId = id;   // trim colors and the BUTTON link are the document's (below)
+    psPartScaleTyped = null;                                // a This part scale typed on another document
     psGtypeRender();
     if (id == null) return;
     setTimeout(function () { psShadeTidy(id).catch(function () {}); }, 400);   // extra veils from older runs
@@ -5885,7 +5886,7 @@
       if (psGtypeDocId !== id || now !== id) return;
       if (got && (got.upscale === "done" || got.upscale === "skipped" || got.upscale === "kept")) { psUpDoc = { docId: id, v: got.upscale, info: got.upInfo || null }; try { psStepsRefresh(); } catch (_) {} }
       if (got) { try { psGrayFromDocState(id, got); } catch (_) {} }
-      if (got && got.trimColors && psTrimColorDocId === id) { psTrimColors = Object.assign({}, got.trimColors); try { psTrimColorRender(); } catch (_) {} }
+      if (got && (got.trimColors || got.trimLink) && psTrimColorDocId === id) { psTrimColors = Object.assign({}, got.trimColors || {}); psTrimLink = !!got.trimLink; try { psTrimColorRender(); } catch (_) {} }
       if (got && Array.isArray(got.stale) && psStaleDocId === id) {
         psStaleSteps = got.stale.filter(function (n) { return n >= 3 && n <= PS_STEP_COUNT; });
         try { psStepsRefresh(); } catch (_) {}
@@ -6037,7 +6038,8 @@
   }
   async function actPsGtypeConfirm() {
     const pc = psGtypePendingChange;
-    if (!pc || generateInFlight) return;
+    if (!pc) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const tg = psGtypeResetTargets();             // read again: the document may have changed
     generateInFlight = true;
     traceStart("Print Swap — garment type " + psGarmentType + " → " + pc.id + " (reset steps 3–9)");
@@ -6167,7 +6169,8 @@
   }
   async function actPsResetGo() {
     const rp = psResetPending;
-    if (!rp || generateInFlight) return;
+    if (!rp) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const box = $("ps-reset-confirm"); if (box) box.classList.add("hidden");
     psResetPending = null;
     const ps = psMod();
@@ -6199,7 +6202,7 @@
         const upKept = !!psUpscaleLayer(), upInfo = psUpInfo();
         psUpSet(upKept ? "kept" : null, upKept ? upInfo : null);   // step 0 can run again; UPSCALE stays
         try { psGrayFromDocState(psActiveDocId(), null); } catch (_) {}   // gray back to Mid
-        psTrimColors = {}; psTrimPending = null;                           // the trim groups are gone: colors back to Original
+        psTrimColors = {}; psTrimLink = false;                            // the trim groups are gone: colors back to Original
         try { psTrimColorRender(); } catch (_) {}
         try {
           const st0 = psStateEmpty();
@@ -6328,8 +6331,8 @@
         if (has) await kbLoadChannel(ch); else { try { await deselectAll(); } catch (_) {} }
         await psSelectPartInLayersInModal(name);
       }, { commandName: "KBImage — show part" });
-      setStatus("ok", has ? name + " is selected. Draw a selection, then + Add selection or - Remove selection."
-                          : name + " has no pixels yet. Select it by hand, then + Add selection.");
+      setStatus("ok", has ? name + " is selected. Draw a selection, then + Add or - Remove."
+                          : name + " has no pixels yet. Select it by hand, then + Add.");
     } catch (err) {
       setStatus("bad", "Could not show " + name + ": " + ((err && err.message) || String(err)));
     }
@@ -6660,7 +6663,7 @@
   }
 
   async function actPsFindParts() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     const doc = ps.app.activeDocument;
     if (!doc) { setStatus("bad", "Open a Photoshop document first."); return; }
@@ -6710,7 +6713,7 @@
       trace("ps parts: done");
       const miss = p.missing || [];
       // Not found is neutral: those parts are not in this photo. They are unchecked, so steps
-      // 7 to 9 skip them; check one again and add it with + Add selection if it is there.
+      // 7 to 9 skip them; check one again and add it with + Add if it is there.
       const t0 = psGtypeById(p.type);
       if (miss.length) {
         const t = t0, c = psCheckedFor(t);
@@ -6741,7 +6744,7 @@
 
   // ----- TOUCH UP — + / − the current selection to / from the picked part ----------
   async function actPsEditPart(srcEl) {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (!psPartsGroup()) { setStatus("bad", "Click Find parts first."); return; }
@@ -6756,7 +6759,7 @@
     const home = psPartHome(name);
     if (mode === "subtract") {
       if (psPartIsRest(name)) {
-        setStatus("bad", name + " takes whatever is left. To move pixels out of it, pick the part they belong to and use + Add selection.");
+        setStatus("bad", name + " takes whatever is left. To move pixels out of it, pick the part they belong to and use + Add.");
         return;
       }
       if (!kbChannelExists(ch)) { setStatus("bad", name + " has no pixels to remove."); return; }
@@ -6974,10 +6977,13 @@
     const g = st ? Number(st.rotDeg) || 0 : 0;
     if (gr) gr.textContent = "Angle: " + psDegText(g);
     const gs = $("ps-print-scale");
-    if (gs && st && st.scalePct && document.activeElement !== gs) gs.value = String(st.scalePct);
+    if (st) psPrintSaved = { printName: st.printName || null, scalePct: Number(st.scalePct) || 100, parts: st.parts || {} };
+    if (gs && st && st.scalePct && !psPrintScaleSet && document.activeElement !== gs) gs.value = String(st.scalePct);   // a value set, not applied, stays
+    psPrintDirtySync();
     const cc = $("ps-print-continuous"); if (cc && st) cc.checked = psPrintContinuous(st);
     const p = name && st ? st.parts[name] : null;
-    if (ov) ov.value = (p && p.scale != null) ? String(p.scale) : "";
+    if (ov && document.activeElement !== ov) ov.value = psPartScaleTyped && psPartScaleTyped.name === name ? psPartScaleTyped.raw   // typed, not applied: stays
+      : ((p && p.scale != null) ? String(p.scale) : "");
     if (ex) ex.value = (p && p.own != null) ? String(p.own) : "";
     // Whole garment: only its own value. This part: the part's own final angle, else "same as whole garment".
     const own = !!p && ((p.own != null && isFinite(Number(p.own))) || !!Number(p.nudge));
@@ -7022,9 +7028,66 @@
   }
   // 0° / +2° / -7.5° (clockwise is +).
   function psDegText(v) { const r = Math.round(v * 10) / 10; return (r > 0 ? "+" : "") + r + "°"; }
+  // What Apply print last applied (from the document's state) and whether the Scale box
+  // holds a value set since (typed or suggested). "Changes not applied" is only for a new
+  // print or a changed scale; the angle buttons apply at once once the print is placed.
+  let psPrintSaved = null;                             // { printName, scalePct, parts }
+  let psPrintScaleSet = false;
+  let psPartScaleTyped = null;                         // { name, raw }: This part scale typed, not applied yet
+  function psPrintScaleRaw() { return String((($("ps-print-scale") || {}).value) || "").trim().replace("%", ""); }
+  function psPartScaleVal(raw) { const r = String(raw == null ? "" : raw).trim().replace("%", ""), v = Number(r); return (r === "" || !(v > 0)) ? null : Math.min(1000, v); }
+  function psPartSavedScale(parts, name) { const p = parts && parts[name]; return p && p.scale != null && p.scale > 0 ? Number(p.scale) : null; }
+  function psPartScaleChanged(parts) { return !!psPartScaleTyped && psPartScaleVal(psPartScaleTyped.raw) !== psPartSavedScale(parts, psPartScaleTyped.name); }
+  function psPrintDirty() {
+    if (!psPrint || !psPrintPlaced() || !psPrintSaved) return false;
+    if (psPrintSaved.printName && psPrintSaved.printName !== psPrint.name) return true;
+    if (psPartScaleChanged(psPrintSaved.parts)) return true;
+    const v = Number(psPrintScaleRaw());
+    return v > 0 && Math.min(1000, v) !== psPrintSaved.scalePct;
+  }
+  function psPrintDirtySync() { const el = $("ps-print-dirty"); if (el) el.classList.toggle("hidden", !psPrintDirty()); }
+  // Suggested scale: the largest at which the print is not enlarged past the pixels read from
+  // its file (100% = one print pixel per document pixel; a file larger than the read limit
+  // gives less). Shown under the box; before the first Apply print it fills the box.
+  let psPrintSuggest = null;                           // { entry, pct }
+  function psPrintSuggestPct(tex) {
+    if (!tex || !(tex.layerW > 0) || !(tex.layerH > 0)) return null;
+    const r = Math.min(1, (tex.width || tex.layerW) / tex.layerW, (tex.height || tex.layerH) / tex.layerH);
+    return Math.max(1, Math.floor(100 * r));
+  }
+  function psPrintSuggestRender() {
+    const el = $("ps-print-suggest");
+    if (!el) return;
+    const s = psPrint && psPrintSuggest && psPrintSuggest.entry === psPrint.entry ? psPrintSuggest.pct : null;
+    el.classList.toggle("hidden", !s);
+    el.textContent = s ? "Suggested: " + s + "%" : "";
+  }
+  async function psPrintSuggestUpdate() {
+    const entry = psPrint && psPrint.entry;
+    if (!entry) return null;
+    let pct = null;
+    try { pct = psPrintSuggestPct(await psPrintTexture()); } catch (e) { traceErr("ps print: suggested scale", e); }
+    psPrintSuggest = pct ? { entry: entry, pct: pct } : null;
+    if (pct && !psPrintPlaced()) { const sc = $("ps-print-scale"); if (sc) { sc.value = String(pct); psPrintScaleSet = true; } }
+    psPrintSuggestRender();
+    psPrintDirtySync();
+    return pct;
+  }
   function psPrintOnTabOpen() {
     const cc = $("ps-print-continuous");
     if (cc && !cc.__kbWired) { cc.__kbWired = true; cc.addEventListener("change", actPsPrintContinuous); }
+    const sc = $("ps-print-scale");
+    if (sc && !sc.__kbWired) { sc.__kbWired = true; sc.addEventListener("input", function () { psPrintScaleSet = true; psPrintDirtySync(); }); }
+    const ps2 = $("ps-part-scale");
+    if (ps2 && !ps2.__kbWired) {
+      ps2.__kbWired = true;
+      ps2.addEventListener("input", function () {
+        const n = readPills("pills-ps-parts", null);
+        psPartScaleTyped = n ? { name: n, raw: ps2.value } : null;
+        psPrintDirtySync();
+      });
+    }
+    psPrintSuggestRender();
     psPrintButtonSync();
     const el = $("ps-print-name");
     if (el) el.textContent = psPrint ? psPrint.name : "No print chosen";
@@ -7093,6 +7156,14 @@
     }
     psPrintThumbRender();
   }
+  // "The step 8 Build shading preview is still waiting: click Accept (or Discard) under
+  // Build shading in step 8, then click Apply print again."
+  const PS_STEP_RUN = { 0: "Upscale", 1: "Background", 3: "Remove old print", 4: "trim", 5: "Make gray", 6: "Find parts", 7: "Apply print", 8: "Build shading", 9: "Finish" };
+  function psPendingBlockText(action) {
+    const d = pendingRecall && pendingRecall.descriptor, n = d && d.psStep;
+    const what = n != null && PS_STEP_RUN[n] ? "step " + n + " " + PS_STEP_RUN[n] : "another step's";
+    return "The " + what + " preview is still waiting: click Accept (or Discard) under it" + (n != null ? " in step " + n : "") + ", then click " + action + " again.";
+  }
   // Another Print Swap step's preview waiting? A new run would discard its layers.
   function psOtherPending(opPrefix) {
     if (!pendingRecall || !pendingRecall.descriptor) return false;
@@ -7110,7 +7181,7 @@
     psPrintTex = null;
     psPrintOnTabOpen();
     await psPrintThumbUpdate();                         // thumbnail, size and bit depth
-    if (quiet !== true) setStatus("ok", "Print chosen: " + psPrint.name + ". Click Place print.");
+    if (quiet !== true) setStatus("ok", "Print chosen: " + psPrint.name + ". Click Apply print.");
     return psPrint;
   }
 
@@ -7273,7 +7344,11 @@
     try {
       const tex = await psPrintTexture();
       const state = await psStateLoad();
-      if (params.scalePct != null) state.scalePct = params.scalePct;      // Swap keeps the saved scale
+      if (params.scalePct != null) state.scalePct = params.scalePct;      // the scale in the box
+      if (params.partScale && params.partScale.name) {                      // This part scale typed since the last Apply
+        const q = state.parts[params.partScale.name] || { auto: null, nudge: 0, scale: null };
+        q.scale = params.partScale.scale; state.parts[params.partScale.name] = q;
+      }
       params.scalePct = state.scalePct || 100;
       state.printName = params.printName;
       const ids = [], placed = [], empty = [];
@@ -7284,7 +7359,7 @@
         step = "printing " + name;
         setStatus("busy", "Printing " + name + " (" + (i + 1) + " of " + printNames.length + ")…");
         const pst = state.parts[name] || { auto: null, nudge: 0, scale: null };
-        if (!params.keepAngles) pst.auto = null;              // Place print measures each part again
+        if (!params.keepAngles) pst.auto = null;              // a first Apply print measures each part again
         const id = await psRenderPartPrint(name, pst, params.scalePct, tex, state.rotDeg, psPrintContinuous(state));
         state.parts[name] = pst;
         if (id != null) { ids.push(id); placed.push(name); } else empty.push(name);
@@ -7294,65 +7369,58 @@
       params.placed = placed.length; params.empty = empty;
       return { layerIds: ids, afterSnapshotRef: null, state: {} };
     } catch (err) {
-      const e2 = new Error((params.keepAngles ? "Swap print" : "Place print") + " failed while " + step + ": " + ((err && err.message) || String(err)));
+      const e2 = new Error("Apply print failed while " + step + ": " + ((err && err.message) || String(err)));
       e2.cause = err;
       throw e2;
     }
   }
 
-  async function psRunPrint(keepAngles) {
+  async function psRunPrint(keepAngles, partScale, sameScale) {
     const ps = psMod();
     const doc = ps.app.activeDocument;
     if (!doc) { setStatus("bad", "Open a Photoshop document first."); return; }
     const problem = kbDocProblem(doc);
     if (problem) { setStatus("bad", problem); return; }
     if (!psPartsGroup()) { setStatus("bad", "Find parts and Accept them first (step 6)."); return; }
-    if (psOtherPending("printswap:print")) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); return; }
-    if (!psPrint) { setStatus("bad", "Click Choose print first."); return; }
+    if (psOtherPending("printswap:print")) { setStatus("bad", psPendingBlockText("Apply print")); return; }
+    if (!psPrint) { setStatus("bad", "Click Swap print first."); return; }
     const op = keepAngles ? "printswap:print-swap" : "printswap:print";
-    const params = function () { return { printName: psPrint ? psPrint.name : null, scalePct: keepAngles ? null : psPrintScale(), keepAngles: !!keepAngles }; };   // Swap: the saved scale
+    const params = function () { return { printName: psPrint ? psPrint.name : null, scalePct: psPrintScale(), keepAngles: !!keepAngles, partScale: partScale || null }; };   // the scale in the box
     const p = params();
     generateInFlight = true;
-    traceStart("Print Swap — " + (keepAngles ? "Swap print " : "Place print ") + p.printName);
+    traceStart("Print Swap — Apply print " + p.printName + (keepAngles ? " (replace)" : ""));
     try {
       await psRecall(7, "ps-recall-anchor-7", {
         op: op, params: p, targetLayerId: null,
         sourceRef: "print:" + p.printName + " scale:" + p.scalePct,
         paramsProvider: params, execute: executePsPrint,
       });
-      setStatus("ok", (keepAngles ? "Swapped to " : "Placed ") + p.printName + " in " + p.placed + " part(s)"
+      psPartScaleTyped = null;
+      setStatus("ok", (sameScale ? "Print applied: " : keepAngles ? "Replaced with " : "Placed ") + p.printName + " at " + p.scalePct + "% in " + p.placed + " part(s)"
         + (p.empty && p.empty.length ? " (no pixels, no print: " + p.empty.join(", ") + ")" : "")
         + "." + (p.savedInDoc ? "" : " The scale and angles were saved in the plug-in folder only (the document did not take them).")
         + " Accept to keep, or Re-run.");
     } catch (err) {
       traceErr("ps print", err && err.cause ? err.cause : err);
-      setStatus("bad", (err && err.message) || "Place print failed.");
+      setStatus("bad", (err && err.message) || "Apply print failed.");
     } finally {
       generateInFlight = false;
       try { psPrintRefreshPart(); psPartsRefreshList(); updateDocInfo(); } catch (_) {}
       await traceFlush();
     }
   }
-  async function actPsPlacePrint() { if (generateInFlight) return; return psRunPrint(false); }
-  async function actPsSwapPrint() {
-    if (generateInFlight) return;
-    if (!psPartsGroup()) { setStatus("bad", "Find parts and Accept them first (step 6)."); return; }
-    const picked = await actPsChoosePrint(true);
-    if (!picked) return;
-    return psRunPrint(true);
-  }
 
   // Whole-garment rotation: ↺ / ↻ by data-deg, data-set="0" back to 0°, data-set="field"
   // the exact angle typed in. Saved with the scale and angles; every part that has a
   // print is tiled again from the print file (nothing is transformed). With no print
-  // placed yet, the angle is only saved and used by Place print.
+  // placed yet, the angle is only saved and used by Apply print.
   // Every part that has a print, tiled again from the print file with `state` (scale and
   // angles). Returns the parts redone, or null (status set) when the print file is not
   // known since a panel reload. A Place / Swap preview waiting keeps the NEW layers.
   async function psRedoAllPrints(state, verb) {
     const ckT = psGtypeById(psGarmentType), ck = ckT ? psCheckedFor(ckT) : null;
     const parts = psPartNames().filter(function (n) { return n !== PS_UNASSIGNED && psPrintIds(n).length && (!ck || ck.has(n) || !psGtypeParts(ckT).some(function (p) { return p.n === n; })); });
-    if (parts.length && !psPrint) { setStatus("bad", "Click Choose print first (pick the same file again after a panel reload)."); return null; }
+    if (parts.length && !psPrint) { setStatus("bad", "Click Swap print first (pick the same file again after a panel reload)."); return null; }
     const redone = [];
     if (!parts.length) return redone;
     const tex = await psPrintTexture();
@@ -7369,35 +7437,6 @@
       }
     }
     return redone;
-  }
-  // Whole garment scale Apply (or Enter): every part without its own scale follows it.
-  async function actPsPrintScaleApply() {
-    if (generateInFlight) return;
-    if (!psMod().app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
-    const raw = String((($("ps-print-scale") || {}).value) || "").trim().replace("%", ""), v = Number(raw);
-    if (raw === "" || !(v > 0)) { setStatus("bad", "Type the whole-garment scale in % first (for example 100)."); return; }
-    generateInFlight = true;
-    traceStart("Print Swap — scale (whole garment)");
-    try {
-      const state = await psStateLoad();
-      const was = state.scalePct;
-      state.scalePct = Math.min(1000, v);
-      const redone = await psRedoAllPrints(state, "Scaling the print in");
-      if (redone === null) return;
-      const inDoc = await psStateSave(state);
-      const rec = logRecordSkeleton("printswap:print-scale", { fromPct: was, scalePct: state.scalePct, parts: redone.length }, null, "print:" + (psPrint ? psPrint.name : ""));
-      await logRun(rec); await logFinalizeCommitted(rec.id);
-      const mm = redone.length && !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;
-      setStatus("ok", "Whole garment: scale " + state.scalePct + "%" + (redone.length ? ", print redone in " + redone.length + " part(s)." : ". Choose print uses it.")
-        + (inDoc ? "" : " Saved in the plug-in folder only.") + (mm ? " " + mm : ""));
-    } catch (err) {
-      traceErr("ps print scale", err);
-      setStatus("bad", "Could not scale the print: " + ((err && err.message) || String(err)));
-    } finally {
-      generateInFlight = false;
-      try { psPrintRefreshPart(); } catch (_) {}
-      await traceFlush();
-    }
   }
   // Continuous on / off: saved with the document, every part that has a print tiled again.
   async function actPsPrintContinuous() {
@@ -7418,7 +7457,7 @@
       await logRun(rec); await logFinalizeCommitted(rec.id);
       const mm = redone.length && !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;
       setStatus("ok", "Continuous " + (on ? "on: one fabric across every part" : "off: each part tiled along its own direction")
-        + (redone.length ? ", print redone in " + redone.length + " part(s)." : ". Place print uses it.")
+        + (redone.length ? ", print redone in " + redone.length + " part(s)." : ". Apply print uses it.")
         + (inDoc ? "" : " Saved in the plug-in folder only.") + (mm ? " " + mm : ""));
     } catch (err) {
       traceErr("ps print continuous", err);
@@ -7432,7 +7471,7 @@
   // Reset scale and rotation: whole garment 100% and 0°, every part's own scale and angle
   // cleared, the print redone. No confirm (nothing is deleted).
   async function actPsPrintReset() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     if (!psMod().app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     generateInFlight = true;
     traceStart("Print Swap — reset scale and rotation");
@@ -7441,6 +7480,7 @@
       state.scalePct = 100; state.rotDeg = 0;
       Object.keys(state.parts || {}).forEach(function (n) { const p = state.parts[n]; if (p) { p.scale = null; p.own = null; p.nudge = 0; } });
       const sc = $("ps-print-scale"); if (sc) sc.value = "100";
+      psPrintScaleSet = false; psPartScaleTyped = null;
       const ex = $("ps-print-rot-exact"); if (ex) ex.value = "";
       const redone = await psRedoAllPrints(state, "Resetting the print in");
       if (redone === null) return;
@@ -7459,20 +7499,45 @@
       await traceFlush();
     }
   }
-  // One print button: Choose print places the print at once; once placed it is Swap print
-  // (a new file into every part, scale and angles kept).
+  // Swap print only loads the file (thumbnail, name, size, suggested scale); nothing is
+  // placed. Apply print is the one trigger: it places the print, or replaces / updates it.
   function psPrintPlaced() { try { return psPartNames().some(function (n) { return psPrintIds(n).length > 0; }); } catch (_) { return false; } }
-  function psPrintButtonSync() { const b = $("ps-print-btn"); if (b) b.textContent = psPrintPlaced() ? "Swap print" : "Choose print"; }
+  function psPrintButtonSync() { const b = $("ps-print-btn"); if (b) b.textContent = "Swap print"; }
   async function actPsPrintButton() {
-    if (generateInFlight) return;
-    if (psPrintPlaced()) { await actPsSwapPrint(); return; }
+    if (generateInFlight) { setStatus("bad", "Wait for the current run to finish, then click Swap print."); return; }
     const picked = await actPsChoosePrint(true);
     if (!picked) return;
-    await psRunPrint(false);
+    const pct = await psPrintSuggestUpdate();
+    const placed = psPrintPlaced();
+    setStatus("ok", "Print chosen: " + picked.name + (pct ? " (suggested scale " + pct + "%)" : "") + ". "
+      + (placed ? "Set the scale, then click Apply print to replace the old print." : "Set the scale and angle, then click Apply print."));
+  }
+  // Apply print (or Enter in either Scale box): the first time it places the print (Accept /
+  // Re-run); a new print, or the same print at a new whole-garment scale, replaces the print
+  // in every part with the parts' angles kept (Accept / Re-run); a new This part scale alone
+  // redoes only that part, kept at once.
+  async function actPsApplyPrint() {
+    if (generateInFlight) { setStatus("bad", "Wait for the current run to finish, then click Apply print."); return; }
+    if (!psMod().app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
+    if (!psPrint) { setStatus("bad", "Click Swap print first."); return; }
+    const raw = psPrintScaleRaw(), v = Number(raw);
+    if (raw === "" || !(v > 0)) { setStatus("bad", "Type the whole-garment scale in % first (for example 100)."); return; }
+    const pt = psPartScaleTyped;
+    if (pt && String(pt.raw).trim() !== "" && psPartScaleVal(pt.raw) == null) { setStatus("bad", "Type " + pt.name + "'s scale in % (for example 80), or leave it empty for the whole-garment scale."); return; }
+    let st = null;
+    try { st = await psStateLoad(); } catch (_) {}
+    const placed = psPrintPlaced();
+    const part = pt ? { name: pt.name, scale: psPartScaleVal(pt.raw) } : null;
+    if (!placed || !st || st.printName !== psPrint.name) { psPrintScaleSet = false; await psRunPrint(placed, part); return; }
+    const partChanged = psPartScaleChanged(st.parts);
+    if (Math.min(1000, v) !== Number(st.scalePct)) { psPrintScaleSet = false; await psRunPrint(true, partChanged ? part : null, true); return; }
+    if (partChanged) { await actPsPartAdjust(null, part); return; }
+    psPrintScaleSet = false; psPartScaleTyped = null; psPrintDirtySync();
+    setStatus("ok", "Nothing new to apply: " + psPrint.name + " is on the canvas at " + st.scalePct + "% with these part settings. Swap print or change a scale first.");
   }
 
   async function actPsPrintRotate(srcEl) {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     if (!psMod().app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     const get = function (a) { return srcEl && srcEl.getAttribute ? srcEl.getAttribute(a) : null; };
     const set = get("data-set"), d = Number(get("data-deg")) || 0;
@@ -7498,7 +7563,7 @@
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
       const mm = redone.length && !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;   // kept at once: the newest MERGED is redone
-      setStatus("ok", "Whole garment: angle " + psDegText(now) + (redone.length ? ", print turned in " + redone.length + " part(s)." : ". Place print uses it.")
+      setStatus("ok", "Whole garment: angle " + psDegText(now) + (redone.length ? ", print turned in " + redone.length + " part(s)." : ". Apply print uses it.")
         + (inDoc ? "" : " Saved in the plug-in folder only.") + (mm ? " " + mm : ""));
     } catch (err) {
       traceErr("ps print rotate", err);
@@ -7510,14 +7575,13 @@
     }
   }
 
-  // Nudge / per-part scale on the part picked in step 6: only that part is redone.
-  async function actPsPartAdjust(srcEl) {
-    if (generateInFlight) return;
-    const name = readPills("pills-ps-parts", null);
-    if (!name) { setStatus("bad", "Click a part in the list in step 6 first."); return; }
-    if (!psPrint) { setStatus("bad", "Click Choose print first (pick the same file again after a panel reload)."); return; }
-    const old = psPrintIds(name);
-    if (!old.length) { setStatus("bad", name + " has no print yet. Click Place print first."); return; }
+  // This part (the part picked in the Part dropdown): angle buttons / Exact angle + Enter,
+  // or (from Apply print) `partScale` { name, scale }. Only that part is redone, turning
+  // around its own centre. Before the first Apply print an angle is only saved.
+  async function actPsPartAdjust(srcEl, partScale) {
+    if (generateInFlight) { kbBusyNote(); return; }
+    const name = partScale ? partScale.name : readPills("pills-ps-parts", null);
+    if (!name) { setStatus("bad", "Pick a part in the Part dropdown (Adjust one part) first."); return; }
     const d = Number(srcEl && srcEl.getAttribute && srcEl.getAttribute("data-deg")) || 0;
     const zero = !!(srcEl && srcEl.getAttribute && srcEl.getAttribute("data-reset"));   // the 0° button: this part at 0°
     let follow = false, exact = zero ? 0 : null;           // follow = back to the whole-garment angle
@@ -7530,6 +7594,23 @@
         exact = Math.round(v * 10) / 10;
       }
     }
+    if (!partScale && !psPrintPlaced()) {                   // before the first Apply print: the angle only
+      try {
+        const state = await psStateLoad(), g = Number(state.rotDeg) || 0;
+        const pst = state.parts[name] || { auto: null, nudge: 0, scale: null };
+        if (follow) { pst.own = null; pst.nudge = 0; }
+        else if (exact != null) { pst.own = psWrapDeg(exact); pst.nudge = 0; }
+        else { pst.own = psWrapDeg(psPartAngle(pst, g) + d); pst.nudge = 0; }
+        state.parts[name] = pst;
+        await psStateSave(state);
+        setStatus("ok", name + ": angle " + (pst.own == null ? "same as whole garment" : psDegText(pst.own)) + ". Apply print uses it.");
+      } catch (err) { setStatus("bad", "Could not set " + name + "'s angle: " + ((err && err.message) || String(err))); }
+      try { psPrintRefreshPart(); } catch (_) {}
+      return;
+    }
+    if (!psPrint) { setStatus("bad", "Click Swap print first (pick the same file again after a panel reload)."); return; }
+    const old = psPrintIds(name);
+    if (!old.length) { setStatus("bad", name + " has no print (it is unchecked or empty), so there is nothing to change there."); return; }
     generateInFlight = true;
     traceStart("Print Swap — adjust " + name);
     try {
@@ -7540,14 +7621,11 @@
       if (follow) { pst.own = null; pst.nudge = 0; }                          // follows the whole garment again
       else if (exact != null) { pst.own = psWrapDeg(exact); pst.nudge = 0; }  // absolute: whatever the whole garment is
       else if (d) { pst.own = psWrapDeg(psPartAngle(pst, g) + d); pst.nudge = 0; }   // turns from where it is now
-      else {
-        const raw = String((($("ps-part-scale") || {}).value) || "").trim();
-        const v = Number(raw);
-        pst.scale = (raw === "" || !(v > 0)) ? null : Math.min(1000, v);
-      }
+      else if (partScale) pst.scale = partScale.scale;                       // Apply print: This part scale
       const id = await psRenderPartPrint(name, pst, state.scalePct || psPrintScale(), tex, state.rotDeg, psPrintContinuous(state));
       state.parts[name] = pst;
       const inDoc = await psStateSave(state);
+      if (partScale) psPartScaleTyped = null;
       // A Place / Swap preview still waiting must discard the NEW layer on Re-run.
       if (pendingRecall && Array.isArray(pendingRecall.layerIds)) {
         pendingRecall.layerIds = pendingRecall.layerIds.filter(function (x) { return old.indexOf(x) < 0; });
@@ -7762,7 +7840,7 @@
     }
     return { src: as.n ? as.sum / as.n : null, print: ap.n ? ap.sum / ap.n : null, ground: ap.n ? psToneGround(hist) : null };
   }
-  // Measure and pick (step 8 opens, before Build shading, after a Swap print). A side the
+  // Measure and pick (step 8 opens, before Build shading, after a new print is applied). A side the
   // retoucher clicked keeps their pick; the fields are filled when the pair changes.
   async function psToneCheck(force) {
     const docId = psActiveDocId();
@@ -8117,7 +8195,7 @@
       + (p.trimsMoved ? " Trims moved above the shading." : "");
   }
   async function actPsBuildShade() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (!kbChannelExists(PS_GARMENT_CH)) { setStatus("bad", "Find the garment first (step 2)."); return; }
@@ -8682,7 +8760,7 @@
       params.pixels = n;
       trace("ps piping: " + params.mode + " tol " + params.tolPct + "% on " + params.source + " (" + srcId + "), box " + JSON.stringify(rect) + ", " + n + " px"
         + (sm ? ", skin left out " + drop.handsPx + " (hands) + " + drop.skinPx + " (skin color" + (drop.skinColorSkipped ? ": skipped, the piping is skin-colored" : "") + ")" : ", no KBPS hands"));
-      if (!n) throw new Error("nothing matched at " + params.tolPct + "%. Lower the tolerance, try the other piping option, or select it by hand and use + Add selection.");
+      if (!n) throw new Error("nothing matched at " + params.tolPct + "%. Lower the tolerance, try the other piping option, or select it by hand and use + Add.");
       step = "saving KBPS piping";
       await psRectPlaneToChannel(plane, rw, rh, rect, PS_PIPING_CH);
       await psSoftenAfterSave([PS_PIPING_CH], "piping", "piping");                     // edge softness
@@ -8719,7 +8797,7 @@
     return { ring: Math.round(kbNum("ps-piping-ring", au.ring, 0, 200)), minLen: Math.round(kbNum("ps-piping-minlen", au.minLen, 5, 5000)) };
   }
   async function actPsFindPiping() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (!kbChannelExists(PS_GARMENT_CH)) { setStatus("bad", "Find the garment first (step 2)."); return; }
@@ -8747,7 +8825,7 @@
     }
   }
 
-  // Save piping test case (step 4 Settings): what Find piping reads on this document, so a
+  // Save piping test case (step 4 Adjust): what Find piping reads on this document, so a
   // change to piping detection can be checked against real garments offline
   // (tests/piping_cases_test.js). Writes raw files to the plug-in data folder, nothing else:
   //   printswap-case-<name>-src.rgb   CLEAN (else the photo) over the garment box, RGB
@@ -8762,7 +8840,7 @@
     return name;
   }
   async function actPsSavePipingCase() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod(), doc = ps.app.activeDocument;
     if (!doc) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (!kbChannelExists(PS_GARMENT_CH)) { setStatus("bad", "Find the garment first (step 2)."); return; }
@@ -8852,13 +8930,13 @@
     }
   }
   async function actPsFindButtons() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     const doc = ps.app.activeDocument;
     if (!doc) { setStatus("bad", "Open a Photoshop document first."); return; }
     const problem = kbDocProblem(doc);
     if (problem) { setStatus("bad", problem); return; }
-    if (!cachedFalKey) { setStatus("bad", "Add your Fal API key in Settings (gear icon) to find buttons, or select them by hand and use + Add selection."); return; }
+    if (!cachedFalKey) { setStatus("bad", "Add your Fal API key in Settings (gear icon) to find buttons, or select them by hand and use + Add."); return; }
     if (!kbChannelExists(PS_GARMENT_CH)) { setStatus("bad", "Find the garment first (step 2)."); return; }
     if (psOtherPending("printswap:buttons")) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); return; }
     const p = { model: PS_SAM_PATH, prompt: "button" };
@@ -8869,7 +8947,7 @@
         paramsProvider: function () { return { model: PS_SAM_PATH, prompt: "button" }; }, execute: executePsButtons, onSettle: psTrimOnSettle("buttons") });
       setStatus(p.found ? "ok" : "bad", p.found
         ? "SAM found " + p.found + " button(s) on " + (p.calls || 0) + " close-up(s) ($" + (p.costUsd || 0).toFixed(3) + "), selected as KBPS buttons. Fix with + / −. Accept builds the BUTTON group."
-        : "SAM found no buttons. Select them by hand (Lasso or Elliptical Marquee) and use + Add selection under Find buttons.");
+        : "SAM found no buttons. Select them by hand (Lasso or Elliptical Marquee) and use + Add under Find buttons.");
     } catch (err) {
       traceErr("ps buttons", err && err.cause ? err.cause : err);
       setStatus("bad", (err && err.message) || "Find buttons failed.");
@@ -8917,7 +8995,7 @@
     }
   }
   async function actPsFindSamTrim(srcEl) {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const kind = srcEl && srcEl.getAttribute && srcEl.getAttribute("data-trim");
     if (!psIsSamTrim(kind)) return;
     const K = PS_TRIM_KINDS[kind], word = K.group.toLowerCase();
@@ -8926,7 +9004,7 @@
     if (!doc) { setStatus("bad", "Open a Photoshop document first."); return; }
     const problem = kbDocProblem(doc);
     if (problem) { setStatus("bad", problem); return; }
-    if (!cachedFalKey) { setStatus("bad", "Add your Fal API key in Settings (gear icon) to find the " + word + ", or select it by hand and use + Add selection."); return; }
+    if (!cachedFalKey) { setStatus("bad", "Add your Fal API key in Settings (gear icon) to find the " + word + ", or select it by hand and use + Add."); return; }
     if (!kbChannelExists(PS_GARMENT_CH)) { setStatus("bad", "Find the garment first (step 2)."); return; }
     if (psOtherPending(psTrimOp(kind))) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); return; }
     const p = { model: PS_SAM_PATH, prompt: K.sam, kind: kind };
@@ -8937,7 +9015,7 @@
         paramsProvider: function () { return { model: PS_SAM_PATH, prompt: K.sam, kind: kind }; }, execute: executePsSamTrim, onSettle: psTrimOnSettle(kind) });
       setStatus(p.found ? "ok" : "bad", p.found
         ? "SAM found the " + word + " (" + p.found + " piece(s), " + p.pixels + " px) on " + p.calls + " close-up(s), $" + (p.costUsd || 0).toFixed(3) + ". It is selected as " + K.ch + ". Fix with + / −. Accept builds the " + K.group + " group."
-        : "SAM found no " + word + ". Select it by hand and use + Add selection under Find " + word + ".");
+        : "SAM found no " + word + ". Select it by hand and use + Add under Find " + word + ".");
     } catch (err) {
       traceErr("ps " + kind, err && err.cause ? err.cause : err);
       setStatus("bad", (err && err.message) || ("Find " + word + " failed."));
@@ -8949,7 +9027,7 @@
 
   // ----- TOUCH UP — + / − the current selection to / from piping or buttons -------
   async function actPsEditTrim(srcEl) {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     const dt = srcEl && srcEl.getAttribute && srcEl.getAttribute("data-trim");
@@ -9131,18 +9209,20 @@
     while (box.firstChild) box.removeChild(box.firstChild);
     kinds.filter(psIsSamTrim).forEach(function (kind) {
       const K = PS_TRIM_KINDS[kind], word = K.group.toLowerCase();
-      const wrap = document.createElement("div"); wrap.className = "ps-trim-sam";
-      const b = document.createElement("div"); b.className = "btn-secondary"; b.setAttribute("role", "button"); b.setAttribute("tabindex", "0");
+      const wrap = document.createElement("div"); wrap.className = "ps-trim-sam ps-trim-block";
+      const b = document.createElement("div"); b.className = "btn-primary"; b.setAttribute("role", "button"); b.setAttribute("tabindex", "0");
       b.setAttribute("data-action", "ps-find-trim"); b.setAttribute("data-trim", kind); b.textContent = "Find " + word;
       const c = document.createElement("div"); c.className = "ps-cost"; c.textContent = "SAM 3.1 close-ups · up to $" + (KB_ZOOM_TILES * SAM_COST_USD).toFixed(3);
       const a = document.createElement("div"); a.id = psTrimAnchor(kind); a.className = "ps-recall-anchor";
       const links = document.createElement("div"); links.className = "btn-row";
-      [["add", "+ Add selection"], ["subtract", "- Remove selection"]].forEach(function (m) {
+      [["add", "+ Add"], ["subtract", "- Remove"]].forEach(function (m) {
         const l = document.createElement("div"); l.className = "btn-secondary btn-small"; l.setAttribute("role", "button"); l.setAttribute("tabindex", "0");
         l.setAttribute("data-action", "ps-edit-trim"); l.setAttribute("data-trim", kind); l.setAttribute("data-mode", m[0]); l.textContent = m[1];
         links.appendChild(l);
       });
-      wrap.appendChild(b); wrap.appendChild(c); wrap.appendChild(a); wrap.appendChild(links);
+      const main = document.createElement("div"); main.className = "ps-main";
+      main.appendChild(b); main.appendChild(c);
+      wrap.appendChild(links); wrap.appendChild(main); wrap.appendChild(a);
       box.appendChild(wrap);
     });
     const bc = $("ps-buttons-cost"); if (bc) bc.textContent = "SAM 3.1 close-ups · up to $" + (KB_ZOOM_TILES * SAM_COST_USD).toFixed(3);
@@ -9416,7 +9496,7 @@
       trace("ps trims: " + K.group + " built" + (bi ? (bi.fallback ? " (masked; Blend If could not separate it from the fabric)" : " (Blend If " + bi.channel + " " + bi.a + "/" + bi.b + ")") : ""));
     } catch (err) {
       traceErr("ps trims " + kind, err);
-      msg = K.group + " not built: " + ((err && err.message) || String(err)) + (/missing|empty/.test(String(err && err.message)) ? " Select it by hand and use + Add selection." : "");
+      msg = K.group + " not built: " + ((err && err.message) || String(err)) + (/missing|empty/.test(String(err && err.message)) ? " Select it by hand and use + Add." : "");
     }
     await traceFlush();
     return { ok: ok, msg: msg };
@@ -9444,7 +9524,7 @@
   // Shrink mask: the BUTTON mask only (PIPING's mask is the garment outline).
   function psTrimShrink() { return Math.round(kbNum("ps-trim-shrink", 1, 0, 3)); }
   async function actPsPipingRemargin() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     if (!psTopLayerNamed(PS_PIPING_GRP)) { setStatus("bad", "There is no PIPING group yet. Find piping in step 4 and Accept."); return; }
     generateInFlight = true;
     let r = null;
@@ -9453,7 +9533,7 @@
     setStatus(r && r.ok ? "ok" : "bad", r ? r.msg : "");
   }
   async function actPsTrimReshrink() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     if (!psTopLayerNamed(PS_BUTTON_GRP)) { setStatus("bad", "There is no BUTTON group yet. Find buttons in step 4 and Accept."); return; }
     generateInFlight = true;
     let r = null;
@@ -9471,11 +9551,10 @@
   //   Trim lightness (Levels): the trim's median lightness, measured inside its channel,
   //     → the color's lightness, so the texture and shading around it stay;
   //   Color Fill 1 (Color mode): the color's hue and saturation.
-  // Both visible when a color is set, hidden on Original. A color runs as a preview
-  // (Accept / Re-run / Discard): the old pair is hidden while it waits, deleted on Accept.
-  // After Finish, MERGED is hidden while it waits and a new MERGED is built on Accept,
-  // as with a print swap. No Re-run of Find. The color is saved with the document and
-  // put back when the trim group is built again.
+  // Both visible when a color is set, hidden on Original. A pick applies at once (no
+  // Accept): the old pair is deleted and a new one built; Original undoes it. After
+  // Finish a new MERGED is built at once. No Re-run of Find. The color is saved with the
+  // document and put back when the trim group is built again.
   const PS_TRIM_LIGHT = "Trim lightness";
   const PS_TRIM_FILL = "Color Fill 1";
   const PS_TRIM_OLD_ADJ = "Hue/Saturation 1";              // earlier versions' BUTTON recolor
@@ -9483,7 +9562,7 @@
   const PS_TRIM_DARK_FLOOR = 14;                           // the darkest a trim's median goes: folds and edges still read on Black
   let psTrimColors = {};                                   // kind → "#RRGGBB" (absent = Original), this document's
   let psTrimColorDocId = null;
-  let psTrimPending = null;                                // { kind, hex } while a recolor preview waits
+  let psTrimLink = false;                                  // "Buttons same as piping", this document's (off by default)
 
   // Photoshop's Color blend keeps the base's luminosity (0.30 R + 0.59 G + 0.11 B).
   function psLum(rgb) { return 0.3 * rgb[0] + 0.59 * rgb[1] + 0.11 * rgb[2]; }
@@ -9542,125 +9621,118 @@
     const fid = await psMakeTrimFillInModal(rgb);                // Color mode, shown
     return [lid, fid];
   }
+  function psTrimGroups(kinds) { return (kinds || []).map(function (k) { return (PS_TRIM_KINDS[k] || { group: "Trim" }).group; }).join(" and "); }
   function psTrimColorText(p) {
-    const K = PS_TRIM_KINDS[p.kind] || { group: "Trim" }, lv = p.levels || {};
-    const how = !lv.input ? "" : (lv.input[1] < 255 ? "input white " + lv.input[1] : "gamma " + lv.gamma + (lv.output && lv.output[1] < 255 ? ", output white " + lv.output[1] : ""));
-    return K.group + " recolored " + p.hex + ": Trim lightness moves its median lightness " + p.median + " to " + p.target + " (Levels " + how + "), Color Fill 1 (Color mode) gives the hue.";
+    const per = p.per && p.per.length ? p.per : [{ kind: p.kind, median: p.median, target: p.target, levels: p.levels }];
+    const one = function (q) {
+      const K = PS_TRIM_KINDS[q.kind] || { group: "Trim" }, lv = q.levels || {};
+      const how = !lv.input ? "" : (lv.input[1] < 255 ? "input white " + lv.input[1] : "gamma " + lv.gamma + (lv.output && lv.output[1] < 255 ? ", output white " + lv.output[1] : ""));
+      return K.group + " median lightness " + q.median + " to " + q.target + " (Levels " + how + ")";
+    };
+    return psTrimGroups(per.map(function (q) { return q.kind; })) + " recolored " + p.hex + (per.length > 1 ? " together" : "") + ": Trim lightness moves "
+      + per.map(one).join("; ") + ", Color Fill 1 (Color mode) gives the hue.";
   }
   async function psTrimColorSave() {
-    try { const st = await psStateLoad(); st.trimColors = Object.assign({}, psTrimColors); await psStateSave(st); }
+    try { const st = await psStateLoad(); st.trimColors = Object.assign({}, psTrimColors); st.trimLink = !!psTrimLink; await psStateSave(st); }
     catch (e) { traceErr("ps trims: save colors", e); }
   }
-  // Show the old pair again (a Re-run, Discard or a new pick replaces the preview).
-  async function psTrimColorUnhold(state) {
-    const held = (state && state.held) || [];
-    if (!held.length) return;
-    await psMod().core.executeAsModal(async function () {
-      held.forEach(function (h) { const l = kbLayerById(h.id); if (l) { try { l.visible = h.visible; } catch (_) {} } });
-    }, { commandName: "KBImage — trim color back" });
-  }
-  async function executePsTrimColor(params) {
-    const K = PS_TRIM_KINDS[params.kind], rgb = kbParseHex(params.hex || "");
-    if (!K || !rgb) throw new Error("there is no color to apply.");
-    await psMergedHide();                                          // after Finish: MERGED hidden while the preview waits
-    const held = [];
-    try {
-      setStatus("busy", "Measuring " + K.group + "…");
-      params.median = await psTrimMedian(params.kind);
-      params.target = Math.round(psLum(rgb));
-      params.levels = psTrimLevels(params.median, params.target);
-      let ids = [];
-      setStatus("busy", "Recoloring " + K.group + "…");
-      await psMod().core.executeAsModal(async function () {
-        const base = psTrimBase(params.kind);
-        if (!base) throw new Error("there is no " + K.group + " group any more.");
-        psTrimColorLayers(params.kind).forEach(function (l) {
-          let v = true; try { v = l.visible; } catch (_) {}
-          held.push({ id: l.id, visible: v });
-          try { l.visible = false; } catch (_) {}
-        });
-        ids = await psTrimColorLayersInModal(base.id, rgb, params.levels);
-      }, { commandName: "KBImage — recolor " + K.group });
-      trace("ps trims: recolor " + K.group + " " + params.hex + ", median " + params.median + " → " + params.target + ", Levels " + JSON.stringify(params.levels) + ", layers " + ids.join(", "));
-      return { layerIds: ids, state: { kind: params.kind, hex: params.hex, held: held } };
-    } catch (e) {
-      try { await psTrimColorUnhold({ held: held }); } catch (_) {}
-      await psMergedRestore();
-      throw e;
+  // A color on these trims at once (no Accept): each trim's old pair deleted and a new
+  // Trim lightness + Color Fill 1 built. Returns the per-trim measurements.
+  async function psTrimColorApply(kinds, hex) {
+    const rgb = kbParseHex(hex || "");
+    if (!rgb) throw new Error("there is no color to apply.");
+    const names = psTrimGroups(kinds), per = [];
+    setStatus("busy", "Measuring " + names + "…");
+    for (let i = 0; i < kinds.length; i++) {
+      const med = await psTrimMedian(kinds[i]), tgt = Math.round(psLum(rgb));
+      per.push({ kind: kinds[i], median: med, target: tgt, levels: psTrimLevels(med, tgt) });
     }
+    setStatus("busy", "Recoloring " + names + "…");
+    let ids = [];
+    await psMod().core.executeAsModal(async function () {
+      for (let i = 0; i < per.length; i++) {
+        const q = per[i], base = psTrimBase(q.kind);
+        if (!base) throw new Error("there is no " + PS_TRIM_KINDS[q.kind].group + " group any more.");
+        const old = psTrimColorLayers(q.kind);
+        for (let k = 0; k < old.length; k++) if (kbLayerById(old[k].id)) await psDeleteLayerInModal(old[k].id);   // the old pair, replaced
+        ids = ids.concat(await psTrimColorLayersInModal(base.id, rgb, q.levels));
+      }
+    }, { commandName: "KBImage — recolor " + names });
+    trace("ps trims: recolor " + names + " " + hex + ", " + per.map(function (q) { return q.kind + " median " + q.median + " → " + q.target + ", Levels " + JSON.stringify(q.levels); }).join("; ") + ", layers " + ids.join(", "));
+    return per;
   }
   function psTrimWord(kind) { const K = PS_TRIM_KINDS[kind]; return kind === "buttons" ? "buttons" : (K ? K.group.toLowerCase() : "the trim"); }
-  async function psTrimColorRun(kind, hex) {
+  // "Buttons same as piping" applies only when the type has both trims.
+  function psTrimLinked() { const ks = psTypeTrimKinds(); return !!psTrimLink && ks.indexOf("piping") >= 0 && ks.indexOf("buttons") >= 0; }
+  // The trims a color change on `kind` recolors: PIPING and BUTTON together while linked.
+  function psTrimRunKinds(kind) {
+    if (kind === "piping" && psTrimLinked() && psTrimBase("buttons")) return ["piping", "buttons"];
+    return [kind];
+  }
+  // Why a color cannot be applied now (null = it can). The panel keeps what the retoucher
+  // typed or picked; nothing is reset quietly.
+  function psTrimBlocked() {
+    if (generateInFlight) return "Wait for the current run to finish, then pick the color again.";
+    if (psOtherPending("printswap:trim-color")) return "Accept or Discard the preview that is waiting first.";
+    return null;
+  }
+  async function psTrimColorRun(kind, hex, opts) {
     const K = PS_TRIM_KINDS[kind];
-    if (!K || generateInFlight) { psTrimColorSync(kind); return; }
+    if (!K) return;
+    opts = opts || {};
+    if (kind === "buttons" && psTrimLinked() && !opts.link) { psTrimColorSync(kind); setStatus("bad", "BUTTON follows PIPING. Turn off Buttons same as piping to set it on its own."); return; }
+    const kinds = opts.kinds || psTrimRunKinds(kind);
+    const why = psTrimBlocked();
+    if (why) { setStatus("bad", why); return; }                   // the box and chip keep what was typed or picked
     if (!psTrimBase(kind)) { setStatus("bad", "There is no " + K.group + " group yet. Find " + psTrimWord(kind) + " in step 4 and Accept, then pick its color."); psTrimColorSync(kind); return; }
-    if (psOtherPending("printswap:trim-color")) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); psTrimColorSync(kind); return; }
-    if (!hex) return psTrimColorOriginal(kind);
-    const bar = $("ps-recall-bar"), anchor = $("ps-recall-anchor-4c");
-    if (bar && anchor && bar.parentNode !== anchor) anchor.appendChild(bar);
-    psTrimPending = { kind: kind, hex: hex };
-    psTrimColorSync(kind);
-    const p = { kind: kind, hex: hex };
+    if (!hex) return psTrimColorOriginal(kinds);
+    const names = psTrimGroups(kinds);
     generateInFlight = true;
-    traceStart("Print Swap — recolor " + K.group);
+    traceStart("Print Swap — recolor " + names);
     try {
-      await runWithRecall({ op: "printswap:trim-color", params: p, targetLayerId: null, sourceRef: "trim:" + K.group,
-        paramsProvider: function () { return { kind: kind, hex: hex }; },
-        execute: executePsTrimColor,
-        preDiscard: async function (state) { await psTrimColorUnhold(state); },
-        onSettle: async function (state, accepted) {
-          const k = (state && state.kind) || kind;
-          let msg = null;
-          if (accepted) {
-            const held = (state && state.held) || [];
-            await psMod().core.executeAsModal(async function () {
-              for (let i = 0; i < held.length; i++) if (kbLayerById(held[i].id)) await psDeleteLayerInModal(held[i].id);   // the old pair, replaced
-            }, { commandName: "KBImage — keep trim color" });
-            psTrimColors[k] = state.hex;
-            await psTrimColorSave();
-            const mm = psMergedHeld ? await psMergedRebuild() : null;
-            msg = PS_TRIM_KINDS[k].group + " " + state.hex + " kept." + (mm ? " " + mm : "");
-          } else {
-            try { await psTrimColorUnhold(state); } catch (_) {}
-            await psMergedRestore();
-          }
-          if (psTrimPending && psTrimPending.kind === k) psTrimPending = null;
-          psTrimColorSync(k);
-          return msg;
-        },
-        reRunStatus: function (pp) { return psTrimColorText(pp) + " Accept to keep it, or Discard."; } });
-      if (pendingRecall && pendingRecall.descriptor && pendingRecall.descriptor.op === "printswap:trim-color") setStatus("ok", psTrimColorText(p) + " Accept to keep it, or Discard.");
+      const per = await psTrimColorApply(kinds, hex);
+      kinds.forEach(function (k) { psTrimColors[k] = hex; });
+      if (opts.link) psTrimLink = true;
+      await psTrimColorSave();
+      const mm = !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;   // after Finish: the newest MERGED is redone
+      const rec = logRecordSkeleton("printswap:trim-color", { kind: kinds[0], kinds: kinds, hex: hex }, null, "trim:" + names);
+      await logRun(rec);
+      await logFinalizeCommitted(rec.id);
+      setStatus("ok", psTrimColorText({ hex: hex, per: per }) + (mm ? " " + mm : ""));
     } catch (err) {
-      traceErr("ps trims: recolor " + K.group, err);
-      if (psTrimPending && psTrimPending.kind === kind) psTrimPending = null;
-      psTrimColorSync(kind);
-      setStatus("bad", "Could not recolor " + K.group + ": " + ((err && err.message) || String(err)));
+      traceErr("ps trims: recolor " + names, err);
+      if (opts.link) psTrimLink = false;
+      setStatus("bad", "Could not recolor " + names + ": " + ((err && err.message) || String(err)));
     } finally {
       generateInFlight = false;
+      kinds.forEach(psTrimColorSync);
+      psTrimLinkSync();
       try { updateDocInfo(); } catch (_) {}
       await traceFlush();
     }
   }
   // Original: no recolor. Kept at once (the pair hidden, not deleted); after Finish the newest MERGED is redone.
-  async function psTrimColorOriginal(kind) {
-    const K = PS_TRIM_KINDS[kind];
+  async function psTrimColorOriginal(kindsIn) {
+    const kinds = Array.isArray(kindsIn) ? kindsIn : [kindsIn];
+    const names = psTrimGroups(kinds);
     generateInFlight = true;
     try {
-      const layers = psTrimColorLayers(kind);
+      let layers = [];
+      kinds.forEach(function (k) { layers = layers.concat(psTrimColorLayers(k)); });
       await psMod().core.executeAsModal(async function () { layers.forEach(function (l) { try { l.visible = false; } catch (_) {} }); },
-        { commandName: "KBImage — " + K.group + " original color" });
-      delete psTrimColors[kind];
+        { commandName: "KBImage — " + names + " original color" });
+      kinds.forEach(function (k) { delete psTrimColors[k]; });
       await psTrimColorSave();
       const mm = layers.length && !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;
-      const rec = logRecordSkeleton("printswap:trim-color", { kind: kind, hex: null }, null, "trim:" + K.group);
+      const rec = logRecordSkeleton("printswap:trim-color", { kind: kinds[0], kinds: kinds, hex: null }, null, "trim:" + names);
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
-      setStatus("ok", K.group + ": Original, no recolor" + (layers.length ? " (Trim lightness and Color Fill 1 hidden)." : ".") + (mm ? " " + mm : ""));
+      setStatus("ok", names + ": Original, no recolor" + (layers.length ? " (Trim lightness and Color Fill 1 hidden)." : ".") + (mm ? " " + mm : ""));
     } catch (err) {
-      setStatus("bad", "Could not set " + K.group + " back to Original: " + ((err && err.message) || String(err)));
+      setStatus("bad", "Could not set " + names + " back to Original: " + ((err && err.message) || String(err)));
     } finally {
       generateInFlight = false;
-      psTrimColorSync(kind);
+      kinds.forEach(psTrimColorSync);
     }
   }
   // After the trim group is built again (Find accepted, Edge margin, Shrink …): its saved color back on.
@@ -9681,7 +9753,7 @@
   }
 
   // ----- Panel: one row per trim of the picked type ------------------------------
-  function psTrimColorShown(kind) { return psTrimPending && psTrimPending.kind === kind ? psTrimPending.hex : (psTrimColors[kind] || null); }
+  function psTrimColorShown(kind) { return psTrimColors[kind] || null; }
   function psTrimColorSync(kind) {
     const hex = psTrimColorShown(kind);
     const sw = $("ps-tc-sw-" + kind);
@@ -9718,18 +9790,56 @@
         p.setAttribute("data-value", c[0]); p.textContent = c[1];
         pills.appendChild(p);
       });
+      row.id = "ps-tc-row-" + kind;
       row.appendChild(nm); row.appendChild(line); row.appendChild(pills);
-      // BUTTON ↔ PIPING are often the same color: "Same as piping" / "Same as buttons"
-      const other = kind === "buttons" ? "piping" : (kind === "piping" ? "buttons" : null);
-      if (other && psTypeTrimKinds().indexOf(other) >= 0) {
-        const ln = document.createElement("span"); ln.className = "text-link"; ln.setAttribute("role", "button"); ln.setAttribute("tabindex", "0");
-        ln.setAttribute("data-action", "ps-trim-color-same"); ln.setAttribute("data-trim", kind); ln.setAttribute("data-from", other);
-        ln.textContent = "Same as " + psTrimWord(other);
-        row.appendChild(ln);
-      }
       box.appendChild(row);
       psTrimColorSync(kind);
     });
+    // BUTTON and PIPING are often the same color: one checkbox under the rows links them.
+    const ks = psTypeTrimKinds();
+    if (ks.indexOf("piping") >= 0 && ks.indexOf("buttons") >= 0) {
+      const lb = document.createElement("label"); lb.className = "ps-check ps-trim-link";
+      const cb = document.createElement("input"); cb.id = "ps-trim-link"; cb.type = "checkbox";
+      cb.addEventListener("change", actPsTrimLink);
+      lb.appendChild(cb); lb.appendChild(document.createTextNode(" Buttons same as piping"));
+      box.appendChild(lb);
+    }
+    psTrimLinkSync();
+  }
+  // Linked: the BUTTON row is grayed out and shows what is on BUTTON (PIPING's color).
+  function psTrimLinkSync() {
+    const on = psTrimLinked(), cb = $("ps-trim-link");
+    if (cb) cb.checked = on;
+    const row = $("ps-tc-row-buttons");
+    if (!row) return;
+    row.classList.toggle("ps-trim-linked", on);
+    const inp = $("ps-tc-hex-buttons"); if (inp) inp.disabled = on;
+    const g = $("pills-ps-tc-buttons"); if (g) g.classList.toggle("ps-disabled", on);
+  }
+  async function actPsTrimLink() {
+    const cb = $("ps-trim-link");
+    if (!cb) return;
+    const on = !!cb.checked;
+    const why = psTrimBlocked();
+    if (why) {
+      cb.checked = !on;                                            // said, not quiet: the checkbox stays as the canvas is
+      setStatus("bad", why);
+      return;
+    }
+    if (!on) {
+      psTrimLink = false; await psTrimColorSave(); psTrimLinkSync();
+      setStatus("ok", "BUTTON is on its own again, " + (psTrimColors.buttons || "Original") + ".");
+      return;
+    }
+    const want = psTrimColors.piping || null, have = psTrimColors.buttons || null;
+    psTrimLink = true; psTrimLinkSync();
+    if (want === have || !psTrimBase("buttons")) {
+      await psTrimColorSave();
+      setStatus("ok", "BUTTON follows PIPING (" + (want || "Original") + ").");
+      return;
+    }
+    if (!want) { await psTrimColorOriginal(["buttons"]); await psTrimColorSave(); setStatus("ok", "BUTTON follows PIPING: Original, no recolor."); return; }
+    await psTrimColorRun("buttons", want, { link: true, kinds: ["buttons"] });   // BUTTON takes PIPING's color, at once
   }
   function psTrimColorFromBox(kind) {
     const box = $("ps-tc-hex-" + kind); if (!box) return;
@@ -9739,14 +9849,6 @@
     box.classList.remove("ps-bad");
     const hex = rgb ? psHex(rgb) : null;
     if (hex === psTrimColorShown(kind)) { box.value = hex || ""; return; }   // the same color (Enter, then leaving the box): once
-    psTrimColorRun(kind, hex);
-  }
-  // "Same as piping" under BUTTON (and the other way): the other trim's color, applied here.
-  function actPsTrimColorSame(srcEl) {
-    const kind = srcEl && srcEl.getAttribute ? srcEl.getAttribute("data-trim") : null, from = srcEl && srcEl.getAttribute ? srcEl.getAttribute("data-from") : null;
-    if (!PS_TRIM_KINDS[kind] || !PS_TRIM_KINDS[from]) return;
-    const hex = psTrimColors[from] || null;
-    if (hex === psTrimColorShown(kind)) { setStatus("ok", PS_TRIM_KINDS[kind].group + " is already " + (hex || "Original") + ", the same as " + PS_TRIM_KINDS[from].group + "."); return; }
     psTrimColorRun(kind, hex);
   }
   function psOnTrimColorChip(kind, value) {
@@ -9764,7 +9866,9 @@
     const kind = kindIn || (srcEl && srcEl.getAttribute ? srcEl.getAttribute("data-trim") : null);
     const K = PS_TRIM_KINDS[kind];
     if (!K) return;
-    if (generateInFlight) { psTrimColorSync(kind); return; }
+    if (kind === "buttons" && psTrimLinked()) { psTrimColorSync(kind); setStatus("bad", "BUTTON follows PIPING. Turn off Buttons same as piping to set it on its own."); return; }
+    const why = psTrimBlocked();
+    if (why) { setStatus("bad", why); return; }                     // checked before the picker opens
     if (!psTrimBase(kind)) { setStatus("bad", "There is no " + K.group + " group yet. Find " + psTrimWord(kind) + " in step 4 and Accept, then pick its color."); psTrimColorSync(kind); return; }
     const ps = psMod();
     const start = kbParseHex(psTrimColorShown(kind) || "#FFFFFF") || [255, 255, 255];
@@ -9824,9 +9928,9 @@
   //   its result becomes both raw and C (no extra feather on top).
   // =======================================================================
   function psRawName(ch) { return "KBPS raw " + String(ch).replace(/^KBPS /, ""); }
-  // One Edge softness slider per step: person (1), garment (2), trims (4), parts (6).
-  const PS_EDGE_IDS = ["ps-edge-soft-person", "ps-edge-soft-garment", "ps-edge-soft-trims", "ps-edge-soft-parts"];
-  function psEdgeSoftId(kind) { if (kind === "person") return "ps-edge-soft-person"; return kind === "part" ? "ps-edge-soft-parts" : (PS_TRIM_KINDS[kind] ? "ps-edge-soft-trims" : "ps-edge-soft-garment"); }
+  // One Edge softness slider per Adjust: person (1), garment (2), piping and other trims (4), buttons (4), parts (6).
+  const PS_EDGE_IDS = ["ps-edge-soft-person", "ps-edge-soft-garment", "ps-edge-soft-trims", "ps-edge-soft-buttons", "ps-edge-soft-parts"];
+  function psEdgeSoftId(kind) { if (kind === "person") return "ps-edge-soft-person"; if (kind === "buttons") return "ps-edge-soft-buttons"; return kind === "part" ? "ps-edge-soft-parts" : (PS_TRIM_KINDS[kind] ? "ps-edge-soft-trims" : "ps-edge-soft-garment"); }
   function psEdgeSoft(kind) { return Math.round(kbNum(psEdgeSoftId(kind), 1, 0, 5) * 2) / 2; }
   function psEdgeSoftSync() {
     for (let i = 0; i < PS_EDGE_IDS.length; i++) {
@@ -9946,7 +10050,7 @@
   }
 
   async function actPsEdgeApply(srcEl) {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     const t = psEdgeTarget(srcEl);
@@ -9979,7 +10083,7 @@
 
   // Photoshop's own Select and Mask on the chosen mask; the result goes back to it.
   async function actPsEdgeRefine(srcEl) {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     const t = psEdgeTarget(srcEl);
@@ -10005,7 +10109,7 @@
           opened = true;
         } catch (e) {
           if (/cancel/i.test(String((e && e.message) || e))) throw new Error("Select and Mask was cancelled; the " + t.label + " mask was not changed.");
-          throw new Error("Photoshop did not let the plug-in open Select and Mask (" + ((e && e.message) || String(e)) + "). Use Select > Select and Mask yourself on the loaded selection, then + Add selection.");
+          throw new Error("Photoshop did not let the plug-in open Select and Mask (" + ((e && e.message) || String(e)) + "). Use Select > Select and Mask yourself on the loaded selection, then + Add.");
         }
         if (!kbSelectionBounds()) throw new Error("Select and Mask returned an empty selection; the " + t.label + " mask was not changed.");
         await psSaveSelectionAsInModal(psRawName(t.ch));      // the refined edge is the new base
@@ -10189,7 +10293,7 @@
   function psStepsRefresh() {
     try { psGtypeFollowDoc(); } catch (_) {}
     try { psUpKeptSync(); } catch (_) {}                     // an UPSCALE layer always counts as kept
-    try { psPrintButtonSync(); } catch (_) {}                 // Choose print / Swap print
+    try { psPrintButtonSync(); } catch (_) {}                 // Swap print
     const gt = psGtypeById(psGarmentType);
     const s0 = $("ps-step-state-0");
     if (s0) {
@@ -10251,6 +10355,7 @@
   async function psRecall(step, anchorId, descriptor) {
     const bar = $("ps-recall-bar"), anchor = $(anchorId);
     if (bar && anchor && bar.parentNode !== anchor) anchor.appendChild(bar);
+    descriptor.psStep = step;                              // named when this preview blocks another step
     if (psOpenStep !== step) psStepOpen(step);
     const orig = descriptor.onSettle;
     const afterFinish = step === 7 || step === 8;          // Print / Shading after Finish: MERGED follows
@@ -10389,14 +10494,17 @@
   }
   // Step 0 after Start over (UPSCALE kept).
   async function actPsUpKeep() {
-    if (generateInFlight || psStepState(0) !== "kept") return;
+    if (generateInFlight) { kbBusyNote(); return; }
+    if (psStepState(0) !== "kept") { setStatus("bad", "Step 0 has no kept UPSCALE to keep."); return; }
     await psUpSave("done");
     psStepsRefresh();
     psStepOpen(1);
     setStatus("ok", "UPSCALE kept (" + psUpKeptText() + "). Step 1 is ready.");
   }
   async function actPsUpRemove() {
-    if (generateInFlight || !psUpscaleLayer() || psStepState(0) === "locked") return;
+    if (generateInFlight) { kbBusyNote(); return; }
+    if (!psUpscaleLayer()) { setStatus("bad", "There is no UPSCALE layer in this document."); return; }
+    if (psStepState(0) === "locked") { setStatus("bad", "Step 0 is locked once step 1 is done. Use Start over to change it."); return; }
     generateInFlight = true;
     let o = null;
     try {
@@ -10414,7 +10522,9 @@
     setStatus("ok", "UPSCALE removed: " + (o != null ? kbLayerName(o) || "the original" : "the original") + " is shown again at " + w + " × " + h + " px. Step 0 is ready: Upscale or Skip.");
   }
   async function actPsUpAgain() {
-    if (generateInFlight || !psUpscaleLayer() || psStepState(0) === "locked") return;
+    if (generateInFlight) { kbBusyNote(); return; }
+    if (!psUpscaleLayer()) { setStatus("bad", "There is no UPSCALE layer in this document."); return; }
+    if (psStepState(0) === "locked") { setStatus("bad", "Step 0 is locked once step 1 is done. Use Start over to change it."); return; }
     if (!cachedFalKey) { setStatus("bad", "Add your Fal API key in Settings (gear icon) to upscale."); return; }
     generateInFlight = true;
     try {
@@ -10531,7 +10641,7 @@
   }
 
   async function actPsUpscale() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     const doc = ps.app.activeDocument;
     if (!doc) { setStatus("bad", "Open a Photoshop document first."); return; }
@@ -10572,7 +10682,7 @@
     }
   }
   async function actPsUpSkip() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     if (!psMod().app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (pendingRecall && String(pendingRecall.descriptor && pendingRecall.descriptor.op) === "printswap:upscale") { setStatus("bad", "Accept or Discard the upscale first."); return; }
     if (psStepState(0) === "locked") { psStepsRefresh(); psStepOpen(psCurrentStep() != null ? psCurrentStep() : 1); setStatus("ok", "Step 1 is already done."); return; }
@@ -11145,7 +11255,7 @@
     }
   }
   async function actPsFinish() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (psOtherPending("printswap:finish")) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); return; }
@@ -11175,7 +11285,7 @@
   }
 
   async function actPsWhite() {
-    if (generateInFlight) return;
+    if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
     const doc = ps.app.activeDocument;
     if (!doc) { setStatus("bad", "Open a Photoshop document first."); return; }
@@ -11504,7 +11614,6 @@
     "ps-edit-trim":          actPsEditTrim,
     "ps-trim-color":         actPsTrimColor,
     "ps-trim-color-custom":  actPsTrimColorCustom,
-    "ps-trim-color-same":    actPsTrimColorSame,
     "ps-trim-reshrink":      actPsTrimReshrink,
     "ps-save-piping-case":   actPsSavePipingCase,
     "ps-piping-remargin":    actPsPipingRemargin,
@@ -11514,11 +11623,9 @@
     "ps-part-add":           actPsPartAdd,
     "ps-edit-part":          actPsEditPart,
     "ps-toggle-shapes":      actPsToggleShapes,
-    "ps-choose-print":       actPsPrintButton,   // 7 Print: Choose print places at once; then Swap print
-    "ps-print-scale-apply":  actPsPrintScaleApply,
+    "ps-choose-print":       actPsPrintButton,   // 7 Print: Swap print only loads the file
+    "ps-apply-print":        actPsApplyPrint,    //   Apply print places / replaces / updates it
     "ps-print-reset":        actPsPrintReset,
-    "ps-place-print":        actPsPlacePrint,
-    "ps-swap-print":         actPsSwapPrint,
     "ps-part-adjust":        actPsPartAdjust,
     "ps-print-rotate":       actPsPrintRotate,
     "ps-build-shade":        actPsBuildShade,    // 8 Shading

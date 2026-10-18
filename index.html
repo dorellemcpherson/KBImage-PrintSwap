@@ -213,6 +213,16 @@ body {
 .ps-trim-color-name { font-size: 11px; color: var(--dim); margin: 2px 0 2px; }
 .ps-gray-swatch.ps-swatch-none { background: transparent; }
 .input.ps-bad { border-color: var(--alert); color: var(--alert); }
+.ps-trim-linked { opacity: 0.45; }                       /* BUTTON while it follows PIPING */
+.pills.ps-disabled .pill { cursor: default; }
+.ps-trim-link { margin: 2px 0 4px; }
+/* Each step: options, Adjust, then the main button at the bottom right with its price under it. */
+.ps-main { display: flex; flex-direction: column; align-items: flex-end; }
+.ps-main > .ps-cost { margin-top: 3px; text-align: right; }
+.btn-primary.disabled { opacity: 0.45; cursor: not-allowed; }
+.ps-dirty { font-size: 11px; line-height: 14px; color: var(--accent); text-align: right; }
+.ps-trim-block > * + * { margin-top: 8px; }
+.ps-trim-block + .ps-trim-block { margin-top: 14px; }
 .pill:hover { background: #4d4d4d; }
 .pill.selected {
   background: var(--selbg);
@@ -715,9 +725,11 @@ code {
           <div id="ps-up-fresh">
             <div id="ps-up-size" class="ps-up-size">Document: —</div>
             <div id="ps-up-note" class="ps-cost"></div>
-            <div id="ps-up-btn" class="btn-secondary" role="button" tabindex="0" data-action="ps-upscale">Upscale</div>
-            <div id="ps-up-cost" class="ps-cost">Topaz · $0.08</div>
             <div id="ps-up-skip" class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-up-skip">Skip</div>
+            <div class="ps-main">
+              <div id="ps-up-btn" class="btn-primary" role="button" tabindex="0" data-action="ps-upscale">Upscale</div>
+              <div id="ps-up-cost" class="ps-cost">Topaz · $0.08</div>
+            </div>
           </div>
           <div id="ps-up-kept" class="hidden">
             <div id="ps-up-kept-line" class="ps-up-size">UPSCALE kept.</div>
@@ -737,11 +749,8 @@ code {
             <div class="pill"          role="button" tabindex="0" data-value="lighten">Lighten</div>
           </div>
           <label class="ps-check"><input id="ps-hair-on" type="checkbox" /> Hair</label>
-          <div id="ps-white-btn" class="btn-secondary" role="button" tabindex="0" data-action="ps-white">Background</div>
-          <div id="ps-white-cost" class="ps-cost">Photoshop · free</div>
-          <div id="ps-recall-anchor-1" class="ps-recall-anchor"></div>
           <label id="ps-bg-toggle-row" class="ps-check hidden"><input id="ps-bg-on" type="checkbox" checked /> Lighten background</label>
-          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-1"><span id="ps-set-1-arrow">▸</span> Settings</span>
+          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-1"><span id="ps-set-1-arrow">▸</span> Adjust</span>
           <div id="ps-set-1" class="ps-settings hidden">
             <div id="ps-bg-opacity-field" class="field hidden">
               <span class="field-label">Lighten opacity (%)</span>
@@ -759,12 +768,17 @@ code {
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="person">Refine in Photoshop</div>
             </div>
           </div>
+          <div class="ps-main">
+            <div id="ps-white-btn" class="btn-primary" role="button" tabindex="0" data-action="ps-white">Background</div>
+            <div id="ps-white-cost" class="ps-cost">Photoshop · free</div>
+          </div>
+          <div id="ps-recall-anchor-1" class="ps-recall-anchor"></div>
         </div>
       </div>
 
       <div class="ps-step" id="ps-step-2">
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="2"><span class="ps-step-num">2</span><span class="ps-step-name">Garment</span><span id="ps-step-redo-2" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="2">Redo</span><span id="ps-step-state-2" class="ps-step-state">ready</span></div>
-        <div id="ps-garment-note" class="ps-cost ps-garment-note hidden">Your selection isn't saved to the garment. Use + Add, − Subtract or Use selection as garment.</div>
+        <div id="ps-garment-note" class="ps-cost ps-garment-note hidden">Your selection isn't saved to the garment. Use + Add, - Remove or Use selection as garment.</div>
         <div id="ps-gtype-missing" class="ps-cost ps-gtype-missing hidden">This file has no garment type saved — pick it again (nothing is deleted).</div>
         <div id="ps-step-body-2" class="ps-step-body hidden">
           <div class="field">
@@ -807,14 +821,12 @@ code {
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-gtype-cancel">Keep current type</div>
             </div>
           </div>
-          <div id="ps-find-btn" class="btn-secondary disabled" role="button" tabindex="0" data-action="ps-find-garment">Find garment</div>
-          <div id="ps-find-cost" class="ps-cost">SAM 3.1 · $0.040 (+$0.005 for arms, long sleeves)</div>
           <div class="btn-row">
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-garment" data-mode="add">+ Add selection</div>
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-garment" data-mode="subtract">- Remove selection</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-garment" data-mode="add">+ Add</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-garment" data-mode="subtract">- Remove</div>
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-garment" data-mode="replace">Use selection as garment</div>
           </div>
-          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-2"><span id="ps-set-2-arrow">▸</span> Settings</span>
+          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-2"><span id="ps-set-2-arrow">▸</span> Adjust</span>
           <div id="ps-set-2" class="ps-settings hidden">
             <div class="field">
               <span class="field-label">Grow into old-garment fringe (px, not skin or hair)</span>
@@ -829,14 +841,20 @@ code {
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="garment">Refine in Photoshop</div>
             </div>
           </div>
+          <div class="ps-main">
+            <div id="ps-find-btn" class="btn-primary disabled" role="button" tabindex="0" data-action="ps-find-garment">Find garment</div>
+            <div id="ps-find-cost" class="ps-cost">SAM 3.1 · $0.040 (+$0.005 for arms, long sleeves)</div>
+          </div>
         </div>
       </div>
 
       <div class="ps-step" id="ps-step-3">
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="3"><span class="ps-step-num">3</span><span class="ps-step-name">Remove print</span><span id="ps-step-redo-3" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="3">Redo</span><span id="ps-step-state-3" class="ps-step-state">locked</span></div>
         <div id="ps-step-body-3" class="ps-step-body hidden">
-          <div id="ps-clean-btn" class="btn-secondary" role="button" tabindex="0" data-action="ps-remove-print">Remove old print</div>
-          <div id="ps-clean-cost" class="ps-cost">Nano Banana Pro · $0.13</div>
+          <div class="ps-main">
+            <div id="ps-clean-btn" class="btn-primary" role="button" tabindex="0" data-action="ps-remove-print">Remove old print</div>
+            <div id="ps-clean-cost" class="ps-cost">Nano Banana Pro · $0.13</div>
+          </div>
           <div id="ps-recall-anchor-3" class="ps-recall-anchor"></div>
         </div>
       </div>
@@ -845,7 +863,7 @@ code {
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="4"><span class="ps-step-num">4</span><span class="ps-step-name">Trims</span><span id="ps-step-redo-4" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="4">Redo</span><span id="ps-step-state-4" class="ps-step-state">locked</span></div>
         <div id="ps-step-body-4" class="ps-step-body hidden">
           <div id="ps-trims-for" class="ps-cost">Pick the garment type in step 2 to see its trims.</div>
-          <div id="ps-trim-block-piping">
+          <div id="ps-trim-block-piping" class="ps-trim-block">
           <div id="pills-ps-piping-mode" class="pills" data-group="ps-piping-mode">
             <div class="pill selected" role="button" tabindex="0" data-value="colored">Colored piping</div>
             <div class="pill"          role="button" tabindex="0" data-value="neutral">Neutral piping</div>
@@ -858,32 +876,12 @@ code {
               <div class="pill" role="button" tabindex="0" data-value="dark">Dark</div>
             </div>
           </div>
-          <div class="btn-secondary" role="button" tabindex="0" data-action="ps-find-piping">Find piping</div>
-          <div class="ps-cost">Photoshop · free</div>
-          <div id="ps-recall-anchor-4p" class="ps-recall-anchor"></div>
           <div class="btn-row">
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="piping" data-mode="add">+ Add selection</div>
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="piping" data-mode="subtract">- Remove selection</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="piping" data-mode="add">+ Add</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="piping" data-mode="subtract">- Remove</div>
           </div>
-          </div>
-          <div id="ps-trim-block-buttons">
-          <div class="btn-secondary" role="button" tabindex="0" data-action="ps-find-buttons">Find buttons</div>
-          <div id="ps-buttons-cost" class="ps-cost">SAM 3.1 · $0.005</div>
-          <div id="ps-recall-anchor-4b" class="ps-recall-anchor"></div>
-          <div class="btn-row">
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="buttons" data-mode="add">+ Add selection</div>
-            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="buttons" data-mode="subtract">- Remove selection</div>
-          </div>
-          </div>
-          <div id="ps-trim-blocks-sam"></div>
-          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-4"><span id="ps-set-4-arrow">▸</span> Settings</span>
+          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-4"><span id="ps-set-4-arrow">▸</span> Adjust</span>
           <div id="ps-set-4" class="ps-settings hidden">
-            <div class="field-label">Button fit</div>
-            <div id="pills-ps-button-fit" class="pills" data-group="ps-button-fit">
-              <div class="pill selected" role="button" tabindex="0" data-value="tight">Tight</div>
-              <div class="pill"          role="button" tabindex="0" data-value="normal">Normal</div>
-              <div class="pill"          role="button" tabindex="0" data-value="loose">Loose</div>
-            </div>
             <div class="field">
               <span class="field-label">Tolerance (higher = stricter, thinner): <span id="ps-piping-tol-val">20</span></span>
               <input id="ps-piping-tol" class="ps-range" type="range" min="1" max="100" step="1" value="20" />
@@ -899,13 +897,6 @@ code {
               </div>
             </div>
             <div class="field">
-              <span class="field-label">Shrink button mask (0–3 px)</span>
-              <div class="key-row">
-                <input id="ps-trim-shrink" class="input" type="text" value="1" autocomplete="off" spellcheck="false" />
-                <div class="btn-ghost" role="button" tabindex="0" data-action="ps-trim-reshrink">Re-apply</div>
-              </div>
-            </div>
-            <div class="field">
               <span class="field-label">Edge softness: <span id="ps-edge-soft-trims-val">1 px</span></span>
               <input id="ps-edge-soft-trims" class="ps-range" type="range" min="0" max="5" step="0.5" value="1" />
             </div>
@@ -913,19 +904,55 @@ code {
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="piping">Apply to piping</div>
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="piping">Refine piping</div>
             </div>
+          </div>
+          <div class="ps-main">
+            <div class="btn-primary" role="button" tabindex="0" data-action="ps-find-piping">Find piping</div>
+            <div class="ps-cost">Photoshop · free</div>
+          </div>
+          <div id="ps-recall-anchor-4p" class="ps-recall-anchor"></div>
+          </div>
+          <div id="ps-trim-block-buttons" class="ps-trim-block">
+          <div class="field-label">Button fit</div>
+          <div id="pills-ps-button-fit" class="pills" data-group="ps-button-fit">
+            <div class="pill selected" role="button" tabindex="0" data-value="tight">Tight</div>
+            <div class="pill"          role="button" tabindex="0" data-value="normal">Normal</div>
+            <div class="pill"          role="button" tabindex="0" data-value="loose">Loose</div>
+          </div>
+          <div class="btn-row">
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="buttons" data-mode="add">+ Add</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="buttons" data-mode="subtract">- Remove</div>
+          </div>
+          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-4b"><span id="ps-set-4b-arrow">▸</span> Adjust</span>
+          <div id="ps-set-4b" class="ps-settings hidden">
+            <div class="field">
+              <span class="field-label">Shrink button mask (0–3 px)</span>
+              <div class="key-row">
+                <input id="ps-trim-shrink" class="input" type="text" value="1" autocomplete="off" spellcheck="false" />
+                <div class="btn-ghost" role="button" tabindex="0" data-action="ps-trim-reshrink">Re-apply</div>
+              </div>
+            </div>
+            <div class="field">
+              <span class="field-label">Edge softness: <span id="ps-edge-soft-buttons-val">1 px</span></span>
+              <input id="ps-edge-soft-buttons" class="ps-range" type="range" min="0" max="5" step="0.5" value="1" />
+            </div>
             <div class="btn-row">
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="buttons">Apply to buttons</div>
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="buttons">Refine buttons</div>
             </div>
           </div>
+          <div class="ps-main">
+            <div class="btn-primary" role="button" tabindex="0" data-action="ps-find-buttons">Find buttons</div>
+            <div id="ps-buttons-cost" class="ps-cost">SAM 3.1 · $0.005</div>
+          </div>
+          <div id="ps-recall-anchor-4b" class="ps-recall-anchor"></div>
+          </div>
+          <div id="ps-trim-blocks-sam"></div>
         </div>
       </div>
 
       <div class="ps-step" id="ps-step-5">
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="5"><span class="ps-step-num">5</span><span class="ps-step-name">Gray</span><span id="ps-step-redo-5" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="5">Redo</span><span id="ps-step-state-5" class="ps-step-state">locked</span></div>
         <div id="ps-step-body-5" class="ps-step-body hidden">
-          <div id="ps-gray-btn" class="btn-secondary disabled" role="button" tabindex="0" data-action="ps-make-gray">Make gray</div>
-          <div id="ps-gray-cost" class="ps-cost">Photoshop · free</div>
           <div class="field-label">Target gray</div>
           <div class="ps-gray-row">
             <div id="ps-gray-swatch" class="ps-gray-swatch"></div>
@@ -937,6 +964,10 @@ code {
             <div class="pill" role="button" tabindex="0" data-value="dark">Dark</div>
             <div class="pill" role="button" tabindex="0" data-value="custom">Custom…</div>
           </div>
+          <div class="ps-main">
+            <div id="ps-gray-btn" class="btn-primary disabled" role="button" tabindex="0" data-action="ps-make-gray">Make gray</div>
+            <div id="ps-gray-cost" class="ps-cost">Photoshop · free</div>
+          </div>
           <div id="ps-recall-anchor-5" class="ps-recall-anchor"></div>
         </div>
       </div>
@@ -946,22 +977,19 @@ code {
         <div id="ps-step-body-6" class="ps-step-body hidden">
           <div id="ps-gtype6" class="ps-cost">Pick the garment type in step 2 first.</div>
           <div id="ps-gtype-trims" class="ps-cost"></div>
-          <div id="ps-parts-btn" class="btn-secondary disabled" role="button" tabindex="0" data-action="ps-find-parts">Find parts</div>
-          <div id="ps-parts-cost" class="ps-cost">SAM 3.1 · $0.07</div>
-          <div id="ps-recall-anchor-6" class="ps-recall-anchor"></div>
           <div id="ps-part-checklist" class="ps-checklist hidden"></div>
           <div id="pills-ps-parts" class="pills" data-group="ps-parts"></div>
           <div id="ps-parts-note" class="ps-cost"></div>
           <div id="ps-parts-tools" class="hidden">
             <div class="btn-row">
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-part" data-mode="add">+ Add selection</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-part" data-mode="subtract">- Remove selection</div>
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-part" data-mode="add">+ Add</div>
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-part" data-mode="subtract">- Remove</div>
             </div>
             <div class="btn-row">
               <span id="ps-shapes-link" class="text-link" role="button" tabindex="0" data-action="ps-toggle-shapes">Show shapes</span>
             </div>
           </div>
-          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-6"><span id="ps-set-6-arrow">▸</span> Settings</span>
+          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-6"><span id="ps-set-6-arrow">▸</span> Adjust</span>
           <div id="ps-set-6" class="ps-settings hidden">
             <div class="field">
               <span class="field-label">Edge softness: <span id="ps-edge-soft-parts-val">1 px</span></span>
@@ -972,6 +1000,11 @@ code {
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="part">Refine in Photoshop</div>
             </div>
           </div>
+          <div class="ps-main">
+            <div id="ps-parts-btn" class="btn-primary disabled" role="button" tabindex="0" data-action="ps-find-parts">Find parts</div>
+            <div id="ps-parts-cost" class="ps-cost">SAM 3.1 · $0.07</div>
+          </div>
+          <div id="ps-recall-anchor-6" class="ps-recall-anchor"></div>
         </div>
       </div>
 
@@ -979,7 +1012,7 @@ code {
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="7"><span class="ps-step-num">7</span><span class="ps-step-name">Print and Color</span><span id="ps-step-redo-7" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="7">Redo</span><span id="ps-step-state-7" class="ps-step-state">locked</span></div>
         <div id="ps-step-body-7" class="ps-step-body hidden">
           <div class="btn-row">
-            <div id="ps-print-btn" class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-choose-print">Choose print</div>
+            <div id="ps-print-btn" class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-choose-print">Swap print</div>
             <span class="ps-cost">PNG, JPG, TIF</span>
             <span id="ps-print-name" class="ps-cost">No print chosen</span>
           </div>
@@ -987,15 +1020,13 @@ code {
             <img id="ps-print-thumb-img" class="hidden" alt="Chosen print" />
             <div id="ps-print-thumb-info" class="ps-cost"></div>
           </div>
-          <div class="ps-cost">Photoshop · free</div>
-          <div id="ps-recall-anchor-7" class="ps-recall-anchor"></div>
           <label class="ps-check"><input id="ps-print-continuous" type="checkbox" checked /> Continuous (one fabric across all parts)</label>
           <div class="ps-group-head">SCALE</div>
           <div class="key-row">
             <span class="ps-row-label">Whole garment</span>
             <input id="ps-print-scale" class="input" type="text" value="100" autocomplete="off" spellcheck="false" />
-            <div class="btn-ghost" role="button" tabindex="0" data-action="ps-print-scale-apply">Apply</div>
           </div>
+          <div id="ps-print-suggest" class="ps-cost hidden"></div>
           <div class="ps-group-head">ROTATE</div>
           <div class="field-label">Whole garment · <span id="ps-print-rot" class="ps-angle">Angle: 0°</span></div>
           <div class="btn-row">
@@ -1006,9 +1037,9 @@ code {
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-print-rotate" data-set="0" title="Back to 0°">0°</div>
           </div>
           <div class="key-row">
-            <input id="ps-print-rot-exact" class="input" type="text" value="" placeholder="Exact angle, e.g. -7.5" autocomplete="off" spellcheck="false" />
-            <div class="btn-ghost" role="button" tabindex="0" data-action="ps-print-rotate" data-set="field">Apply</div>
+            <input id="ps-print-rot-exact" class="input" type="text" value="" placeholder="Exact angle, e.g. -7.5 (Enter)" autocomplete="off" spellcheck="false" />
           </div>
+          <span class="text-action" role="button" tabindex="0" data-action="ps-print-reset">Reset scale and rotation</span>
           <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-7p"><span id="ps-set-7p-arrow">▸</span> Adjust one part</span>
           <div id="ps-set-7p" class="ps-settings hidden">
           <div class="key-row">
@@ -1024,7 +1055,6 @@ code {
           <div class="key-row">
             <span class="ps-row-label">This part</span>
             <input id="ps-part-scale" class="input" type="text" value="" placeholder="empty = whole garment" autocomplete="off" spellcheck="false" />
-            <div class="btn-ghost" role="button" tabindex="0" data-action="ps-part-adjust" data-deg="0">Apply</div>
           </div>
           <div class="field-label">This part · <span id="ps-part-angle" class="ps-angle">Angle: 0°</span></div>
           <div class="btn-row">
@@ -1035,23 +1065,24 @@ code {
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-part-adjust" data-reset="1" title="Set this part to 0°">0°</div>
           </div>
           <div class="key-row">
-            <input id="ps-part-rot-exact" class="input" type="text" value="" placeholder="empty = whole garment" autocomplete="off" spellcheck="false" />
-            <div class="btn-ghost" role="button" tabindex="0" data-action="ps-part-adjust" data-set="field">Apply</div>
+            <input id="ps-part-rot-exact" class="input" type="text" value="" placeholder="Exact angle (Enter), empty = whole garment" autocomplete="off" spellcheck="false" />
           </div>
           </div>
+          <div id="ps-print-dirty" class="ps-dirty hidden">Changes not applied.</div>
+          <div class="ps-main">
+            <div id="ps-apply-print" class="btn-primary" role="button" tabindex="0" data-action="ps-apply-print">Apply print</div>
+            <div class="ps-cost">Photoshop · free</div>
+          </div>
+          <div id="ps-recall-anchor-7" class="ps-recall-anchor"></div>
           <div class="ps-divider"></div>
           <div class="field-label">Trim colors</div>
           <div id="ps-trim-colors" class="ps-trim-colors"></div>
-          <div id="ps-recall-anchor-4c" class="ps-recall-anchor"></div>
-          <span class="text-action" role="button" tabindex="0" data-action="ps-print-reset">Reset scale and rotation</span>
         </div>
       </div>
 
       <div class="ps-step" id="ps-step-8">
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="8"><span class="ps-step-num">8</span><span class="ps-step-name">Shading</span><span id="ps-step-redo-8" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="8">Redo</span><span id="ps-step-state-8" class="ps-step-state">locked</span></div>
         <div id="ps-step-body-8" class="ps-step-body hidden">
-          <div class="btn-secondary" role="button" tabindex="0" data-action="ps-build-shade">Build shading</div>
-          <div class="ps-cost">Photoshop · free</div>
           <div class="ps-tone-row">
             <span class="field-label ps-tone-label">Garment</span>
             <div id="pills-ps-tone-src" class="pills pills-small" data-group="ps-tone-src">
@@ -1078,8 +1109,7 @@ code {
               <div class="pill" role="button" tabindex="0" data-value="off">Off</div>
             </div>
           </div>
-          <div id="ps-recall-anchor-8" class="ps-recall-anchor"></div>
-          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-8"><span id="ps-set-8-arrow">▸</span> Settings</span>
+          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-8"><span id="ps-set-8-arrow">▸</span> Adjust</span>
           <div id="ps-set-8" class="ps-settings hidden">
             <div class="field"><span class="field-label">Brightness</span><input id="ps-sh-brightness" class="input" type="text" value="7" autocomplete="off" spellcheck="false" /></div>
             <div class="field"><span class="field-label">Contrast</span><input id="ps-sh-contrast" class="input" type="text" value="19" autocomplete="off" spellcheck="false" /></div>
@@ -1089,14 +1119,21 @@ code {
             <div class="field"><span class="field-label">Linear Burn %</span><input id="ps-sh-burn" class="input" type="text" value="10" autocomplete="off" spellcheck="false" /></div>
             <div class="field"><span class="field-label">Veil %</span><input id="ps-sh-veil" class="input" type="text" value="0" autocomplete="off" spellcheck="false" /></div>
           </div>
+          <div class="ps-main">
+            <div class="btn-primary" role="button" tabindex="0" data-action="ps-build-shade">Build shading</div>
+            <div class="ps-cost">Photoshop · free</div>
+          </div>
+          <div id="ps-recall-anchor-8" class="ps-recall-anchor"></div>
         </div>
       </div>
-    
+
       <div class="ps-step" id="ps-step-9">
         <div class="ps-step-head" role="button" tabindex="0" data-action="ps-step-toggle" data-step="9"><span class="ps-step-num">9</span><span class="ps-step-name">Finish</span><span id="ps-step-redo-9" class="text-action ps-redo hidden" role="button" tabindex="0" data-action="ps-step-redo" data-step="9">Redo</span><span id="ps-step-state-9" class="ps-step-state">locked</span></div>
         <div id="ps-step-body-9" class="ps-step-body hidden">
-          <div class="btn-secondary" role="button" tabindex="0" data-action="ps-finish">Finish</div>
-          <div class="ps-cost">Photoshop · free</div>
+          <div class="ps-main">
+            <div class="btn-primary" role="button" tabindex="0" data-action="ps-finish">Finish</div>
+            <div class="ps-cost">Photoshop · free</div>
+          </div>
           <div id="ps-recall-anchor-9" class="ps-recall-anchor"></div>
         </div>
       </div>

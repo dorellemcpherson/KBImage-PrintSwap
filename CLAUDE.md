@@ -49,7 +49,7 @@ Photoshop UXP panel (`manifest.json`, `index.html`, `src/app.js`). One view, Pri
 ## Testing
 
 * **Piping detection:** after ANY change to Find piping, run `node tests/neutral_piping_test.js`
-  (synthetic) and `node tests/piping_cases_test.js` (real garments saved with step 4 Settings ›
+  (synthetic) and `node tests/piping_cases_test.js` (real garments saved with step 4 Adjust ›
   Save piping test case, imported with `node tests/import_piping_cases.js`). All must pass, so
   fixing one garment cannot break another.
 * Offline: `node tests/garment_types_test.js` and `node tests/placement_test.js` (they read
