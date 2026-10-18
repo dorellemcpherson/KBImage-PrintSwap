@@ -88,6 +88,23 @@ Two things in step 7 apply right away, with no Accept: rotation and trim colors.
 
 Every edit you can make in each step, and how it takes effect, is listed in [5b. Every edit a retoucher can make](#5b-every-edit-a-retoucher-can-make).
 
+### What costs money
+
+> ⚠️ **Every click on a paid button is charged, every time.** That includes **Re-run**, a second click on the main button, and a run that fails or is discarded after the AI has answered. Discard deletes the result, but the charge stays.
+
+Paid buttons (the price is always shown under the button):
+
+| Step | Button | Service | About |
+|---|---|---|---|
+| 0 | Upscale, Upscale again | Topaz (Fal) | $0.16 |
+| 1 | Background with Hair | SAM 3.1 (Fal) | $0.005 |
+| 2 | Find garment | SAM 3.1 (Fal) | $0.04 to $0.05 |
+| 3 | Remove old print | Nano Banana Pro (Fal) | $0.15, or $0.30 at 4K |
+| 4 | Find buttons, Find lace and the other SAM trims | SAM 3.1 (Fal) | up to $0.02 each |
+| 6 | **Find parts** | SAM 3.1 (Fal) | **$0.045 to $0.285, every run** (one search per part group: 12 parts about $0.05 to $0.19, 19 parts about $0.07 to $0.29) |
+
+Everything else is Photoshop only and free: Find piping, Gray, Swap print and Apply print, rotation, trim colors, Shading, Finish, and every Adjust edit (Apply, Re-apply, Refine).
+
 The bar under the header shows the money spent this session. **Reset** starts it at $0.00.
 
 ## 5. The steps
@@ -204,6 +221,8 @@ The trim groups always sit above the GREY group and above GREY copy 3, so the ve
 ### Step 6 · Parts
 
 The step reads, top to bottom: garment type, the parts list, **+ Add** / **- Remove**, **Show shapes**, Adjust, then **Find parts** and its cost at the bottom right.
+
+> ⚠️ **Find parts is charged every run** ($0.045 to $0.285, depending on how many parts are checked). Re-run, a second Find parts, or a run you Discard each cost again. Before you click: uncheck the parts this garment doesn't have (fewer parts, fewer searches), and fix a single part with **+ Add** / **- Remove** instead of running Find parts again. Fixing by hand is free.
 
 1. Before Find parts the list reads **Parts to find (N)**, all checked. Uncheck any part this garment does not have.
 2. Click **Find parts**. SAM makes one mask per part. The parts then tile the garment exactly: every garment pixel belongs to one part (where two masks overlap, the stronger one keeps it; a gap goes to the nearest part). Where two parts meet, the border is hard with a 1 px overlap, so no light or dark hairline shows between them. A group is built under **PARTS** only for a part with a shape, never an empty one. The status line stays short, for example "12 of 19 parts found · $0.16. Check the parts, then Accept."; the line under the list gives the coverage ("Coverage: 100%, gaps 0 px") and which parts filled gaps, so a missed part that really is visible is easy to spot.
@@ -393,6 +412,7 @@ Other trims of the type (lace, drawcord, bow, zipper) have the same + Add, - Rem
 
 | Edit | What it does | Takes effect |
 |---|---|---|
+| **Find parts / Re-run** | Finds every checked part with SAM | Re-run: **charged every run** ($0.045 to $0.285) |
 | Part checkboxes | Uncheck a part this garment doesn't have; steps 7 to 9 skip it | Right away |
 | + Add (in "In this style, not in this photo") | Brings a part back so you can select it on the photo | Right away |
 | Click a part's name | Selects the part (and its group in Layers) | Right away |

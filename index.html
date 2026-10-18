@@ -281,6 +281,11 @@ body {
 .ps-step-num { color: var(--dim); margin-right: 8px; font-size: 12px; }
 .ps-step-name { flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600; color: var(--text); }
 .ps-step-state { font-size: 11px; color: var(--dim); }
+.ps-step-state.ps-step-missing { color: var(--alert); }
+/* money only: price lines of paid buttons, the Charged badge, the paid total after done ✓ */
+.ps-price, .ps-cost.ps-price, .ps-main > .ps-cost.ps-price { color: #39FF14; font-weight: bold; }
+.ps-charged { font-size: 11px; line-height: 14px; margin-top: 4px; }
+.ps-step-paid { font-size: 11px; }
 .ps-lines { white-space: pre-line; }
 .ps-up-size { font-size: 12px; margin: 0 0 2px; }
 .ps-redo { margin-right: 10px; }                 /* Redo on a done step */
