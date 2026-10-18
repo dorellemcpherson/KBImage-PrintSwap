@@ -1395,6 +1395,7 @@
   function setStatus(kind, text) {
     let k = kind;
     if (k === "bad" && !STATUS_ERROR.test(String(text || ""))) k = "warn";   // a step to do first: orange, not an error
+    if (k === "ok" && /MERGED could not be rebuilt/.test(String(text || ""))) k = "bad";   // kept, but the final failed: an error
     const s = $("ps-status");
     if (s) {
       const sh = statusShort(text);
@@ -10370,8 +10371,12 @@
     descriptor.onSettle = async function (state, accepted) {
       const own = orig ? await orig(state, accepted) : null;
       let msg = typeof own === "string" ? own : null;     // a step may name what Accept did
-      if (afterFinish) msg = accepted ? await psMergedRebuild() : (await psMergedRestore(), null);
+      if (afterFinish) {
+        try { msg = accepted ? await psMergedRebuild() : (await psMergedRestore(), null); }
+        catch (e) { msg = accepted ? "MERGED could not be rebuilt (" + ((e && e.message) || String(e)) + "). Run Finish again." : null; psMergedNote(msg); }
+      }
       if (accepted) psStepAccepted(step, anchorId);
+      try { psStepsRefresh(); } catch (_) {}                // step 7 / 8 and step 9 done ✓ again
       return msg;
     };
     return runWithRecall(descriptor);
@@ -11139,6 +11144,53 @@
     if (m) await psMod().core.executeAsModal(async function () { try { m.visible = h.visible; } catch (_) {} }, { commandName: "KBImage — show MERGED" });
     trace("ps merged: put back as it was (" + h.id + (m ? "" : ", gone") + ")");
   }
+  // Inside executeAsModal: Stamp Visible (Merge Visible, duplicate) made from a new empty
+  // layer at the top of the document, so the active layer is never a hidden one (Photoshop
+  // refuses Merge Visible then). The empty layer is deleted after (unlocked first). Returns
+  // the stamp's id, the stamp active.
+  const KB_STAMP_TMP = "KBPS_tmp_stamp";
+  async function kbStampVisibleInModal() {
+    const ps = psMod(), doc = ps.app.activeDocument, EP = ps.constants && ps.constants.ElementPlacement;
+    try { await deselectAll(); } catch (_) {}
+    const top = doc.layers && doc.layers[0];
+    if (top) await kbSelectLayerById(top.id);
+    try { await selectRGBChannel(); } catch (_) {}
+    let tmpId = null, stampId = null;
+    try {
+      try {
+        await ps.action.batchPlay([{ _obj: "make", _target: [{ _ref: "layer" }], using: { _obj: "layer", name: KB_STAMP_TMP },
+          _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
+      } catch (e) { throw new Error("Making the empty layer for the stamp failed — Photoshop said: " + ((e && e.message) || String(e))); }
+      tmpId = kbActiveLayerId();
+      const tmp = tmpId != null ? kbLayerById(tmpId) : null;
+      if (!tmp || String(tmp.name) !== KB_STAMP_TMP) throw new Error("the empty layer for the stamp was not made.");
+      try { if (doc.layers[0].id !== tmpId) tmp.move(doc, EP.PLACEATBEGINNING); } catch (e) { traceErr("stamp: move the empty layer to the top", e); }
+      try { tmp.visible = true; } catch (_) {}
+      await kbSelectLayerById(tmpId);
+      try { await selectRGBChannel(); } catch (_) {}
+      try {
+        await ps.action.batchPlay([{ _obj: "mergeVisible", duplicate: true, _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
+      } catch (e) { throw new Error("Stamp visible failed — Photoshop said: " + ((e && e.message) || String(e))); }
+      stampId = kbActiveLayerId();
+      if (stampId == null || stampId === tmpId) throw new Error("Stamp visible made no new layer.");
+    } finally {
+      if (tmpId != null && kbLayerById(tmpId)) await psDeleteLayerInModal(tmpId);   // unlocks first
+    }
+    await kbSelectLayerById(stampId);
+    return stampId;
+  }
+  // A failed MERGED rebuild: also shown under the button of the open step.
+  function psMergedNote(text) {
+    const old = document.querySelectorAll(".ps-merged-note");
+    for (let i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
+    if (!text) return;
+    const n = psOpenStep != null ? psOpenStep : 9;
+    const anchor = $("ps-recall-anchor-" + n) || $("ps-recall-anchor-" + n + "p") || $("ps-recall-anchor-9");
+    if (!anchor || !anchor.parentNode) return;
+    const el = document.createElement("div");
+    el.className = "ps-merged-note"; el.textContent = text;
+    anchor.parentNode.insertBefore(el, anchor);
+  }
   // Outside a modal: a new MERGED version on top of the group. replace = true (a turn or
   // scale change kept at once): the newest version is redone in place, no new version.
   // Returns the status line, or null when there was no MERGED to follow.
@@ -11160,12 +11212,7 @@
         if (hair) { try { hair.visible = false; } catch (_) {} }      // HAIR sits on MERGED, not in it (as Finish)
         if (bg) { try { bg.visible = false; } catch (_) {} }          // original background in the final (as Finish)
         try {
-          await kbSelectLayerById(node.id);
-          try { await selectRGBChannel(); } catch (_) {}
-          try {
-            await ps.action.batchPlay([{ _obj: "mergeVisible", duplicate: true, _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
-          } catch (e) { throw new Error("Stamp visible failed — Photoshop said: " + ((e && e.message) || String(e))); }
-          newId = kbActiveLayerId();
+          newId = await kbStampVisibleInModal();                     // from an empty visible layer on top, never the hidden MERGED
           // The versions group, made from Finish's MERGED the first time (in its place).
           let group = node, prev;
           if (replace) {
@@ -11176,6 +11223,9 @@
               n0.move(old, EP.PLACEBEFORE);
               try { n0.visible = true; } catch (_) {}
               await psDeleteLayerInModal(old.id);
+            } else {                                                 // an empty versions group
+              try { n0.name = psMergedVersionName(newPrint); } catch (_) {}
+              n0.move(group, EP.PLACEINSIDE);
             }
             try { node.visible = true; } catch (_) {}
             return;
@@ -11197,12 +11247,15 @@
         }
       }, { commandName: "KBImage — new MERGED" });
       trace("ps merged: new version " + newId + " (" + psMergedVersionName(newPrint) + ")" + (dropped ? ", oldest dropped" : ""));
+      psMergedNote(null);
       return "New MERGED built.";
     } catch (err) {
       traceErr("ps merged rebuild", err);
       if (newId != null && newId !== node.id) { try { await deleteLayersById([newId]); } catch (_) {} }
-      try { await ps.core.executeAsModal(async function () { node.visible = h ? h.visible : true; }, { commandName: "KBImage — show MERGED" }); } catch (_) {}
-      return "Accepted, but a new MERGED could not be built (" + ((err && err.message) || String(err)) + "). Run Finish again.";
+      try { await ps.core.executeAsModal(async function () { const m = kbLayerById(node.id); if (m) m.visible = h ? (h.visible !== false) : true; }, { commandName: "KBImage — show MERGED" }); } catch (_) {}
+      const msg = "MERGED could not be rebuilt (" + ((err && err.message) || String(err)) + "). The previous MERGED is shown again; run Finish again for a new one.";
+      psMergedNote(msg);
+      return msg;
     }
   }
 
@@ -11219,13 +11272,7 @@
       await ps.core.executeAsModal(async function () {
         try { await deselectAll(); } catch (_) {}
         if (bg) { try { bg.visible = false; } catch (_) {} }          // original background in the final
-        const top = doc.layers && doc.layers[0];
-        if (top) await kbSelectLayerById(top.id);
-        try { await selectRGBChannel(); } catch (_) {}
-        try {
-          await ps.action.batchPlay([{ _obj: "mergeVisible", duplicate: true, _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
-        } catch (e) { throw new Error("Stamp visible failed — Photoshop said: " + ((e && e.message) || String(e))); }
-        mergedId = kbActiveLayerId(); made.push(mergedId);
+        mergedId = await kbStampVisibleInModal(); made.push(mergedId);   // from an empty visible layer on top
         try { await renameActiveLayer(PS_MERGED_NAME); } catch (_) {}
         const m = kbLayerById(mergedId);
         try { if (m && doc.layers[0].id !== mergedId) m.move(doc, EP.PLACEATBEGINNING); }   // above everything

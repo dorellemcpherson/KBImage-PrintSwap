@@ -86,6 +86,8 @@ To work a step:
 
 Two things in step 7 apply right away, with no Accept: rotation and trim colors.
 
+Every edit you can make in each step, and how it takes effect, is listed in [5b. Every edit a retoucher can make](#5b-every-edit-a-retoucher-can-make).
+
 The bar under the header shows the money spent this session. **Reset** starts it at $0.00.
 
 ## 5. The steps
