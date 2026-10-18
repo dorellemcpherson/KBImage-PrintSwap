@@ -8109,7 +8109,7 @@
   function psShadeParams() {
     return {
       tone:       psToneKey(),
-      strengthPct: kbNum("ps-sh-strength", 100, 0, 100),
+      strengthPct: kbNum("ps-sh-strength", 100, 0, PS_SHADOW_MAX),   // over 100: SHADOW 2 adds the rest
       foldContrast: kbNum("ps-sh-fold", 1.0, 0.1, 9.99),
       smoothPx:   Math.round(kbNum("ps-sh-smooth", PS_SMOOTH_PX, 0, 100)),
       lightPct:   kbNum("ps-sh-light", 50, 0, 100),
@@ -8226,7 +8226,7 @@
     return out;
   }
   // The layers step 8 builds in SDW (SDW's own; anything else in it is the retoucher's).
-  const PS_SDW_OWN = [PS_SDW_GROUP, "SHADOW", "Color Balance 1", "Brightness/Contrast 1", "Selective Color 1", "Selective Color 2", "Light 1", "Levels 2", "Highlights"];
+  const PS_SDW_OWN = [PS_SDW_GROUP, "SHADOW", "SHADOW 2", "Color Balance 1", "Brightness/Contrast 1", "Selective Color 1", "Selective Color 2", "Light 1", "Levels 2", "Highlights"];
   // A layer the retoucher locked inside SDW (not one of step 8's own): its name, else null.
   function psSdwForeignLock(sd) {
     const locked = function (l) { try { return !!(l.allLocked || l.pixelsLocked || l.positionLocked || l.transparentPixelsLocked); } catch (_) { return false; } };
@@ -8528,9 +8528,18 @@
     return 255;
   }
   const PS_SHADOW_NAME = "SHADOW";
+  // Shading strength 0 to 200%: up to 100 SHADOW alone (Multiply at that %); above, SHADOW at
+  // 100% plus SHADOW 2, a plain copy of SHADOW directly under it in SDW (so Color Balance 1,
+  // Brightness/Contrast 1 and Selective Color 1 still clip to SHADOW), Multiply at the rest.
+  const PS_SHADOW2_NAME = "SHADOW 2", PS_SHADOW_MAX = 200;
+  function psShadowSplit(pct) {
+    const v = Math.max(0, Math.min(PS_SHADOW_MAX, Math.round(Number(pct) || 0)));
+    return { one: Math.min(100, v), two: Math.max(0, v - 100) };
+  }
   const PS_LIGHT_CH = "KBPS_tmp_light", PS_DEEP_CH = "KBPS_tmp_deep", PS_LIT_CH = "KBPS_tmp_lit";
-  // Step 8: the SDW group in PS (garment mask), bottom → top: SHADOW (GREY exact, Fold
-  // smoothing, median → white, desaturated; Multiply at Shading strength, locked) with
+  // Step 8: the SDW group in PS (garment mask), bottom → top: [SHADOW 2 above 100%,] SHADOW
+  // (GREY exact cut to KBPS garment on transparency, Fold smoothing, median → white,
+  // desaturated; Multiply at Shading strength, locked) with
   // Color Balance 1, Brightness/Contrast 1 and Selective Color 1 clipped to it; Selective
   // Color 2 (garment mask); Light 1 (fold edges mask) and Levels 2 (deepest folds mask).
   async function executePsShade(params) {
@@ -8653,11 +8662,36 @@
           try { await deselectAll(); } catch (_) {}
         }
         try { await kbRemoveChannels(RING); } catch (_) {}
+        // SHADOW holds only garment pixels: GREY exact's mask (if the copy brought one) is
+        // applied, then everything outside KBPS garment (full res, same soft edge) is cleared to
+        // transparency. Any copy of SHADOW then carries no background; Multiply on transparency
+        // changes nothing outside. SDW keeps its own garment mask.
+        step = "applying " + PS_EXACT_LAYER + "'s mask on " + PS_SHADOW_NAME;
+        await kbDeleteMaskInModal(sh.id, true, PS_SHADOW_NAME);
+        step = "cutting " + PS_SHADOW_NAME + " to the garment";
+        try { await deselectAll(); } catch (_) {}
+        await kbLoadChannel(PS_GARMENT_CH);
+        await cmd({ _obj: "inverse" }, "Inverting the garment selection");
+        await pick(sh.id, PS_SHADOW_NAME);
+        try { await selectRGBChannel(); } catch (_) {}
+        await cmd({ _obj: "fill", using: { _enum: "fillContents", _value: "black" },
+          opacity: { _unit: "percentUnit", _value: 100 }, mode: { _enum: "blendMode", _value: "clearEnum" } }, "Clearing " + PS_SHADOW_NAME + " outside the garment");
+        try { await deselectAll(); } catch (_) {}
         step = "mapping the median gray to white on " + PS_SHADOW_NAME;
         await pick(sh.id, PS_SHADOW_NAME);
         try { await selectRGBChannel(); } catch (_) {}
         await cmd(Object.assign({ _obj: "levels" }, psLevelsValues(0, params.median, 1)), "Levels on " + PS_SHADOW_NAME);
         await cmd({ _obj: "desaturate" }, "Desaturate on " + PS_SHADOW_NAME);
+        // Above 100%: SHADOW 2, a plain copy made now (after Levels / Desaturate), right under SHADOW.
+        const split = psShadowSplit(params.strengthPct);
+        let sh2 = null;
+        if (split.two > 0) {
+          step = "copying " + PS_SHADOW_NAME + " as " + PS_SHADOW2_NAME;
+          try { sh2 = await sh.duplicate(sh, EP.PLACEAFTER, PS_SHADOW2_NAME); }
+          catch (e) { throw new Error("Duplicating " + PS_SHADOW_NAME + " as " + PS_SHADOW2_NAME + " failed — Photoshop said: " + ((e && e.message) || String(e))); }
+          built.push(sh2.id);
+          try { if (sh2.isClippingMask) sh2.isClippingMask = false; } catch (_) {}
+        }
         // Clipped to SHADOW: they shape the shading only, never the print.
         const clipped = async function (name, type, values, afterId) {
           must(afterId, "the layer under " + name);
@@ -8692,12 +8726,13 @@
         step = "making " + PS_HI_NAME + " (lit side of the folds)";
         const hi = await free(PS_HI_NAME, "levels", psLevelsValues(0, 255, PS_HI_GAMMA, [PS_HI_OUT_BLACK, 255]), burn, PS_LIT_CH);
         step = "setting blend modes";
-        await psSetBlendInModal(sh.id, "multiply", params.strengthPct);
+        await psSetBlendInModal(sh.id, "multiply", split.one);
+        if (sh2) await psSetBlendInModal(sh2.id, "multiply", split.two);
         await psSetBlendInModal(light, "normal", params.lightPct);
         await psSetBlendInModal(burn, "normal", params.burnPct);
         await psSetBlendInModal(hi, "screen", params.hiPct);
         step = "grouping " + PS_SDW_GROUP;
-        sdwId = await psGroupInModal([sh.id, cb, bc, sc1, sc2, light, burn, hi], PS_SDW_GROUP);
+        sdwId = await psGroupInModal((sh2 ? [sh2.id] : []).concat([sh.id, cb, bc, sc1, sc2, light, burn, hi]), PS_SDW_GROUP);
         built.push(sdwId);
         const g = must(sdwId, "The " + PS_SDW_GROUP + " group");
         psPassThrough(g);
@@ -8708,6 +8743,7 @@
         step = "locking " + PS_SHADOW_NAME;
         try { g.visible = true; } catch (_) {}
         try { const l = kbLayerById(sh.id); if (l) l.allLocked = true; } catch (e) { traceErr("ps shade: lock SHADOW", e); }
+        if (sh2) { try { const l = kbLayerById(sh2.id); if (l) l.allLocked = true; } catch (e) { traceErr("ps shade: lock SHADOW 2", e); } }
         try { grey.visible = false; } catch (_) {}            // out of the way, not deleted
       }, { commandName: "KBImage — shading" });
       trace("ps shade: SDW group " + sdwId + ", " + JSON.stringify(params));
@@ -8726,11 +8762,60 @@
     }
   }
 
+  // Shading strength changed with an SDW in the document (kept or waiting): SHADOW's opacity,
+  // and SHADOW 2 added, updated or removed, without a rebuild. Both are found by name inside
+  // SDW (never a saved id). SHADOW and SHADOW 2 are the plug-in's own locks: unlocked for the
+  // change and locked again. A kept SDW after Finish: the newest MERGED is redone in place.
+  async function psShadeStrengthChanged() {
+    const sd = psSdwGroup(), sh = sd ? psChildNamed(sd, PS_SHADOW_NAME) : null;
+    if (!sh) return;
+    if (generateInFlight) { kbBusyNote(); return; }
+    const v = Math.round(kbNum("ps-sh-strength", 100, 0, PS_SHADOW_MAX)), split = psShadowSplit(v);
+    generateInFlight = true;
+    let did = "";
+    try {
+      await psMod().core.executeAsModal(async function () {
+        const EP = psMod().constants.ElementPlacement;
+        const S = psSdwGroup(), a = S ? psChildNamed(S, PS_SHADOW_NAME) : null;
+        if (!a) throw new Error(PS_SHADOW_NAME + " is not in " + PS_SDW_GROUP + " any more.");
+        let b = psChildNamed(S, PS_SHADOW2_NAME);
+        await kbUnlockOneInModal(a);
+        await psSetBlendInModal(a.id, "multiply", split.one);
+        if (split.two > 0) {
+          if (!b) {
+            b = await a.duplicate(a, EP.PLACEAFTER, PS_SHADOW2_NAME);  // right under SHADOW: the clipped layers stay on SHADOW
+            try { if (b.isClippingMask) b.isClippingMask = false; } catch (_) {}
+            did = "added";
+          } else { await kbUnlockOneInModal(b); did = "updated"; }
+          await psSetBlendInModal(b.id, "multiply", split.two);
+          try { b.allLocked = true; } catch (e) { traceErr("ps shade: lock SHADOW 2", e); }
+        } else if (b) {
+          const f = await kbDeleteLayerSafeInModal(b.id);
+          if (f) throw new Error(PS_SHADOW2_NAME + " could not be removed (" + f.why + ").");
+          did = "removed";
+        }
+        try { a.allLocked = true; } catch (e) { traceErr("ps shade: lock SHADOW", e); }
+      }, { commandName: "KBImage — Shading strength" });
+      trace("ps shade: strength " + v + "% → SHADOW " + split.one + "%" + (split.two ? ", SHADOW 2 " + split.two + "%" : "") + (did ? " (SHADOW 2 " + did + ")" : ""));
+      let m = null;
+      const kept = !psIsPending(sd.id);
+      if (kept && !pendingRecall && psMergedAccepted()) m = await psMergedRebuild(true);
+      setStatus(m && /could not/.test(m) ? "bad" : "ok", "Shading strength " + v + "%: SHADOW " + split.one + "%" + (split.two ? ", SHADOW 2 " + split.two + "%" : "")
+        + (did ? " (SHADOW 2 " + did + ")" : "") + "." + (m ? " " + m : ""));
+    } catch (e) { traceErr("ps shade: strength", e); setStatus("bad", "Could not change the Shading strength: " + ((e && e.message) || String(e))); }
+    finally { generateInFlight = false; }
+  }
+  function psShadeStrengthWire() {
+    const f = $("ps-sh-strength");
+    if (f && !f.__kbWired) { f.__kbWired = true; f.addEventListener("change", function () { psShadeStrengthChanged().catch(function () {}); }); }
+  }
+
   // First sentence and last: what the status line shows; the rest is in Details.
   function psShadeBuiltText(p) {
     const pair = String(p.tone || "light-light").split("-");
     return "Paint the Light 1, Levels 2 and Highlights masks to add or remove folds."
-      + " Shading built: SDW group. " + pair[0] + " garment → " + pair[1] + " print: SHADOW (Multiply " + p.strengthPct + "%) maps the garment's median gray " + p.median
+      + " Shading built: SDW group. " + pair[0] + " garment → " + pair[1] + " print: SHADOW (Multiply " + psShadowSplit(p.strengthPct).one + "%"
+      + (psShadowSplit(p.strengthPct).two ? ", plus SHADOW 2 at " + psShadowSplit(p.strengthPct).two + "%" : "") + ", cut to the garment) maps the garment's median gray " + p.median
       + " to white, so only folds darken; fold contrast " + Number(p.foldContrast).toFixed(1) + " (Brightness/Contrast 1 contrast " + p.contrast + "), fold smoothing " + p.smoothPx + " px."
       + (p.smoothBy === "gaussian" ? " Fold smoothing: Gaussian fallback (Photoshop refused Surface Blur; Gaussian Blur " + p.smoothPx / 2 + " px)."
         : (p.smoothBy === "none" ? " Fold smoothing: off (Photoshop refused Surface Blur and Gaussian Blur)." : ""))
@@ -11139,6 +11224,7 @@
     }
     if (psStepState(2) !== "done") psGarmentNoteSet(false);
     try { psPriceSync(); } catch (_) {}
+    try { psShadeStrengthWire(); } catch (_) {}
   }
   function psStepOpen(n) {
     const was = psOpenStep;
