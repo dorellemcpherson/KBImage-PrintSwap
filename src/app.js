@@ -7974,6 +7974,7 @@
       smoothPx:   Math.round(kbNum("ps-sh-smooth", PS_SMOOTH_PX, 0, 100)),
       lightPct:   kbNum("ps-sh-light", 50, 0, 100),
       burnPct:    kbNum("ps-sh-burn", 40, 0, 100),
+      hiPct:      kbNum("ps-sh-hi", 0, 0, 100),
       warm:       readPills("pills-ps-sh-warm", "on") !== "off",
       ground:     psTone.ground || null,
       ringPx:     psShadeRingPx(),
@@ -8010,8 +8011,9 @@
   // Pure: the fold masks from GREY exact (px over gb.rect, garment alpha gb.alpha), on a grid
   // over the document (long edge at most 1500 px), 0…255:
   //   edge (Light 1): where the gray changes fastest (|value − local mean|), the top edgeAmt%
-  //     of the garment; deep (Levels 2): the darkest deepAmt% of the garment (lightly smoothed).
-  //   Both feathered by featherPx and kept inside the garment.
+  //     of the garment; deep (Levels 2): the darkest deepAmt% of the garment (lightly smoothed);
+  //     lit (Highlights): the brightest PS_HI_AMT% (the lit side of the folds).
+  //   All feathered by featherPx and kept inside the garment.
   function psFoldMasks(px, gb, o) {
     const docW = gb.docW, docH = gb.docH, L = Math.max(docW, docH), f = Math.min(1, 1500 / L);
     const gw = Math.max(2, Math.round(docW * f)), gh = Math.max(2, Math.round(docH * f)), N = gw * gh;
@@ -8040,17 +8042,22 @@
       return { t: vals[i], mid: vals[(vals.length - 1) >> 1] };
     };
     const fr = Math.max(0, Math.round((o.featherPx || 0) * f));
-    const make = function (score, pct, top) {
+    const make = function (score, pct, top, bright) {
       const c = cut(score, pct, top);
       let m = new Float32Array(N), on = 0, nG = 0;
-      for (let q = 0; q < N; q++) { if (!inG[q]) continue; nG++; if (c && (top ? score[q] >= c.t && score[q] > 0.5 : score[q] <= c.t && score[q] < c.mid - 0.5)) { m[q] = 255; on++; } }
+      for (let q = 0; q < N; q++) {
+        if (!inG[q]) continue; nG++;
+        const hit = !c ? false : (bright ? score[q] >= c.t && score[q] > c.mid + 0.5          // lighter than the garment's median: flat fabric gives no mask
+          : (top ? score[q] >= c.t && score[q] > 0.5 : score[q] <= c.t && score[q] < c.mid - 0.5));
+        if (hit) { m[q] = 255; on++; }
+      }
       if (fr > 0) m = kbBoxBlur(kbBoxBlur(m, gw, gh, Math.max(1, Math.round(fr / 2))), gw, gh, Math.max(1, Math.round(fr / 2)));
       const out = new Uint8Array(N);
       for (let q = 0; q < N; q++) out[q] = inG[q] ? Math.max(0, Math.min(255, Math.round(m[q]))) : 0;
       return { plane: out, pct: nG ? Math.round(on / nG * 1000) / 10 : 0 };
     };
-    const e = make(edgeS, o.edgeAmt, true), d = make(sm, o.deepAmt, false);
-    return { edge: e.plane, deep: d.plane, edgePct: e.pct, deepPct: d.pct, gw: gw, gh: gh };
+    const e = make(edgeS, o.edgeAmt, true), d = make(sm, o.deepAmt, false), h = make(sm, PS_HI_AMT, true, true);
+    return { edge: e.plane, deep: d.plane, lit: h.plane, edgePct: e.pct, deepPct: d.pct, litPct: h.pct, gw: gw, gh: gh };
   }
   // Edge ring: about 0.15% of the long edge (6 px on 4000 px).
   const PS_RING_FRAC = 0.0015;
@@ -8079,7 +8086,7 @@
     return out;
   }
   // The layers step 8 builds in SDW (SDW's own; anything else in it is the retoucher's).
-  const PS_SDW_OWN = [PS_SDW_GROUP, "SHADOW", "Color Balance 1", "Brightness/Contrast 1", "Selective Color 1", "Selective Color 2", "Light 1", "Levels 2"];
+  const PS_SDW_OWN = [PS_SDW_GROUP, "SHADOW", "Color Balance 1", "Brightness/Contrast 1", "Selective Color 1", "Selective Color 2", "Light 1", "Levels 2", "Highlights"];
   // A layer the retoucher locked inside SDW (not one of step 8's own): its name, else null.
   function psSdwForeignLock(sd) {
     const locked = function (l) { try { return !!(l.allLocked || l.pixelsLocked || l.positionLocked || l.transparentPixelsLocked); } catch (_) { return false; } };
@@ -8163,13 +8170,17 @@
   const PS_SMOOTH_THRESHOLD = 15;                     // Surface Blur threshold (levels): fold edges stay
   // Fold smoothing in px (Surface Blur radius). Dark → Light tested on the blue pajama to the cream floral.
   const PS_SMOOTH_PX = 2;
-  // Fold light % (Light 1) and Burn % (Levels 2): first guesses until tested.
+  // Fold light % (Light 1), Burn % (Levels 2) and Highlights % (0 on a light print, about 40
+  // on a dark one): first guesses until tested.
   const PS_TONE_PRESETS = {
-    "dark-light":  { fold: 2.0, smooth: 2, strength: 100, light: 60, burn: 50 },
-    "light-light": { fold: 1.0, smooth: 2, strength: 100, light: 50, burn: 40 },
-    "light-dark":  { fold: 1.2, smooth: 2, strength: 100, light: 70, burn: 30 },
-    "dark-dark":   { fold: 1.6, smooth: 2, strength: 100, light: 70, burn: 40 },
+    "dark-light":  { fold: 2.0, smooth: 2, strength: 100, light: 60, burn: 50, hi: 0 },
+    "light-light": { fold: 1.0, smooth: 2, strength: 100, light: 50, burn: 40, hi: 0 },
+    "light-dark":  { fold: 1.2, smooth: 2, strength: 100, light: 70, burn: 30, hi: 40 },
+    "dark-dark":   { fold: 1.6, smooth: 2, strength: 100, light: 70, burn: 40, hi: 40 },
   };
+  // Highlights: Levels that brighten (output black raised, gamma above 1) on Screen, masked to
+  // the brightest PS_HI_AMT% of GREY exact (the lit side of the folds). Paintable like Light 1.
+  const PS_HI_NAME = "Highlights", PS_HI_AMT = 10, PS_HI_GAMMA = 1.3, PS_HI_OUT_BLACK = 40;
   function psToneBlank() { return { docId: null, src: "light", print: "light", srcBy: "auto", printBy: "auto", Ls: null, Lp: null, autoSrc: null, autoPrint: null, printName: null, ground: null, measured: false, busy: false }; }
   let psTone = psToneBlank();
   function psToneKey() { return psTone.src + "-" + psTone.print; }
@@ -8197,6 +8208,7 @@
     set("ps-sh-smooth", t.smooth);
     set("ps-sh-light", t.light);
     set("ps-sh-burn", t.burn);
+    set("ps-sh-hi", t.hi);
   }
   // L* (0…100) of an sRGB 8-bit value, by table.
   let psLinTable = null;
@@ -8376,7 +8388,7 @@
     return 255;
   }
   const PS_SHADOW_NAME = "SHADOW";
-  const PS_LIGHT_CH = "KBPS_tmp_light", PS_DEEP_CH = "KBPS_tmp_deep";
+  const PS_LIGHT_CH = "KBPS_tmp_light", PS_DEEP_CH = "KBPS_tmp_deep", PS_LIT_CH = "KBPS_tmp_lit";
   // Step 8: the SDW group in PS (garment mask), bottom → top: SHADOW (GREY exact, Fold
   // smoothing, median → white, desaturated; Multiply at Shading strength, locked) with
   // Color Balance 1, Brightness/Contrast 1 and Selective Color 1 clipped to it; Selective
@@ -8416,6 +8428,8 @@
       params.edgePct = fm.edgePct; params.deepPct = fm.deepPct;
       await psPlaneToChannel(fm.edge, fm.gw, fm.gh, gb.docW, gb.docH, PS_LIGHT_CH);
       await psPlaneToChannel(fm.deep, fm.gw, fm.gh, gb.docW, gb.docH, PS_DEEP_CH);
+      params.litPct = fm.litPct;
+      await psPlaneToChannel(fm.lit, fm.gw, fm.gh, gb.docW, gb.docH, PS_LIT_CH);
       step = "copying " + PS_EXACT_LAYER + " as " + PS_SHADOW_NAME;
       setStatus("busy", "Building the shading…");
       await ps.core.executeAsModal(async function () {
@@ -8535,12 +8549,15 @@
         const light = await free("Light 1", "brightnessEvent", { brightness: 0, center: params.lightContrast, useLegacy: false }, sc2, PS_LIGHT_CH);
         step = "making Levels 2 (deepest folds)";
         const burn = await free("Levels 2", "levels", psLevelsValues(params.l2In[0], params.l2In[2], params.l2In[1], params.l2Out), light, PS_DEEP_CH);
+        step = "making " + PS_HI_NAME + " (lit side of the folds)";
+        const hi = await free(PS_HI_NAME, "levels", psLevelsValues(0, 255, PS_HI_GAMMA, [PS_HI_OUT_BLACK, 255]), burn, PS_LIT_CH);
         step = "setting blend modes";
         await psSetBlendInModal(sh.id, "multiply", params.strengthPct);
         await psSetBlendInModal(light, "normal", params.lightPct);
         await psSetBlendInModal(burn, "normal", params.burnPct);
+        await psSetBlendInModal(hi, "screen", params.hiPct);
         step = "grouping " + PS_SDW_GROUP;
-        sdwId = await psGroupInModal([sh.id, cb, bc, sc1, sc2, light, burn], PS_SDW_GROUP);
+        sdwId = await psGroupInModal([sh.id, cb, bc, sc1, sc2, light, burn, hi], PS_SDW_GROUP);
         built.push(sdwId);
         const g = must(sdwId, "The " + PS_SDW_GROUP + " group");
         psPassThrough(g);
@@ -8565,14 +8582,14 @@
       e2.cause = err;
       throw e2;
     } finally {
-      try { await ps.core.executeAsModal(async function () { await kbRemoveChannels(PS_LIGHT_CH); await kbRemoveChannels(PS_DEEP_CH); }, { commandName: "KBImage — fold masks" }); } catch (_) {}
+      try { await ps.core.executeAsModal(async function () { await kbRemoveChannels(PS_LIGHT_CH); await kbRemoveChannels(PS_DEEP_CH); await kbRemoveChannels(PS_LIT_CH); }, { commandName: "KBImage — fold masks" }); } catch (_) {}
     }
   }
 
   // First sentence and last: what the status line shows; the rest is in Details.
   function psShadeBuiltText(p) {
     const pair = String(p.tone || "light-light").split("-");
-    return "Paint the Light 1 and Levels 2 masks to add or remove folds."
+    return "Paint the Light 1, Levels 2 and Highlights masks to add or remove folds."
       + " Shading built: SDW group. " + pair[0] + " garment → " + pair[1] + " print: SHADOW (Multiply " + p.strengthPct + "%) maps the garment's median gray " + p.median
       + " to white, so only folds darken; fold contrast " + Number(p.foldContrast).toFixed(1) + " (Brightness/Contrast 1 contrast " + p.contrast + "), fold smoothing " + p.smoothPx + " px."
       + (p.smoothBy === "gaussian" ? " Fold smoothing: Gaussian fallback (Photoshop refused Surface Blur; Gaussian Blur " + p.smoothPx / 2 + " px)."
@@ -8581,6 +8598,7 @@
       + (p.warmBy === "on" ? " Color Balance 1 toward the print ground " + p.ground + " (Cyan/Red " + p.cb[0] + ", Yellow/Blue " + p.cb[2] + ")."
         : (p.warmBy === "unmeasured" ? " Color Balance 1: no print ground read, Yellow/Blue -8." : " Warm shadows off: Color Balance 1 at 0."))
       + " Light 1 " + p.lightPct + "% on the fold edges (" + p.edgePct + "% of the garment), Levels 2 " + p.burnPct + "% on the deepest folds (" + p.deepPct + "%)."
+      + " " + PS_HI_NAME + " " + p.hiPct + "% (Screen) on the lit side of the folds (" + p.litPct + "%)."
       + (p.moved ? " Trims and parts moved into PS." : "")
       + " Accept to keep, or change the fields and Re-run."
       + " Re-run replaces your painting.";

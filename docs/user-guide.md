@@ -302,13 +302,13 @@ The pair fills the starting values. You can change any field:
 | --- | --- | --- | --- | --- |
 | Dark → Light | 2.0 | 2 | 0 | 100 |
 | Light → Light | 1.0 | 2 | 0 | 100 |
-| Light → Dark | 1.2 | 2 | 25 | 100 |
-| Dark → Dark | 1.6 | 2 | 15 | 100 |
+| Light → Dark | 1.2 | 2 | 40 | 100 |
+| Dark → Dark | 1.6 | 2 | 40 | 100 |
 
 * **Shading strength %**: the opacity of GREY copy (Multiply).
 * **Fold contrast**: higher means deeper folds.
 * **Fold smoothing (px)**: a Surface Blur on GREY copy that hides fabric noise and keeps the fold edges. Every pair starts at 2 px.
-* **Highlights %**: the opacity of GREY highlights (Screen), which brings back the light side of folds on dark prints.
+* **Highlights %**: the opacity of **Highlights** in SDW (Levels that brighten, on Screen), masked to the lit side of the folds (the brightest parts of GREY exact). 0% on light prints, about 40% on dark prints. Its mask is paintable like Light 1 and Levels 2.
 * **Warm shadows** (On by default): tints the shading map slightly (about 10% saturation) toward the print's ground color, measured when step 8 opens, so shadows on a cream ground read as deeper cream, not gray. Flat fabric is not changed. The line under the toggles names the ground color.
 
 Before the Levels, a thin ring along the KBPS garment edge (about 0.15% of the long edge, 6 px on a 4000 px image) is filled with the median gray in GREY copy, GREY highlights and GREY copy 2. GREY exact is darkest where the cut-out meets the background; without the ring, Multiply prints that edge as a dark outline along the sleeves and side seams.
