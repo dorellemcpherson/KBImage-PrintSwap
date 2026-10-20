@@ -338,6 +338,9 @@ body {
 .ps-toggle { display: inline-block; font-size: 11px; color: var(--link); cursor: pointer; user-select: none; }
 .ps-settings > * + * { margin-top: 8px; }
 .ps-settings { padding-left: 8px; border-left: 2px solid var(--line); }
+.ps-edges { margin-top: 8px; padding: 6px 8px; background: var(--bar); border-radius: 4px; }
+.ps-edges > * + * { margin-top: 6px; }
+.ps-save-hand-edits-row { margin: 0 0 8px; }
 .ps-range { display: block; width: 100%; }
 /* ===== DROPDOWNS (garment type — div-based; no <select>) ===== */
 .dropdown { position: relative; width: 100%; }
@@ -704,6 +707,13 @@ code {
     <section id="view-printswap" class="view hidden">
       <div id="ps-status" class="status muted ps-status-top"></div>
 
+      <!-- Hand-edit sync: folds a hand-painted mask edit (MODEL / BG LIGHTEN, GREY exact,
+           a part's shape layer, PIPING / BUTTON) back into its KBPS channel, on demand.
+           Hidden while PS_HAND_EDIT_SYNC is false (v0.20.8); app.js shows it when it is on. -->
+      <div id="ps-save-hand-edits-row" class="ps-save-hand-edits-row hidden">
+        <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-save-hand-edits">Save my mask edits</div>
+      </div>
+
       <!-- The one recall bar (Accept / Re-run / Discard); app.js moves it under the button of the step that ran. -->
       <div id="ps-recall-bar" class="recall-bar hidden">
         <span class="recall-label">Preview ready.</span>
@@ -758,6 +768,17 @@ code {
           </div>
           <label class="ps-check"><input id="ps-hair-on" type="checkbox" /> Hair</label>
           <label id="ps-bg-toggle-row" class="ps-check hidden"><input id="ps-bg-on" type="checkbox" checked /> Lighten background</label>
+          <div class="ps-edges">
+            <span class="field-label">Edges</span>
+            <div class="field">
+              <span class="field-label">Edge softness: <span id="ps-edge-soft-person-val">2 px</span></span>
+              <input id="ps-edge-soft-person" class="ps-range" type="range" min="0" max="10" step="0.5" value="2" />
+            </div>
+            <div class="btn-row">
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="person">Apply</div>
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="person">Refine in Photoshop</div>
+            </div>
+          </div>
           <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-1"><span id="ps-set-1-arrow">▸</span> Adjust</span>
           <div id="ps-set-1" class="ps-settings hidden">
             <div id="ps-bg-opacity-field" class="field hidden">
@@ -766,14 +787,6 @@ code {
                 <input id="ps-bg-opacity" class="input" type="text" value="50" autocomplete="off" spellcheck="false" />
                 <div class="btn-ghost" role="button" tabindex="0" data-action="ps-bg-opacity">Apply</div>
               </div>
-            </div>
-            <div class="field">
-              <span class="field-label">Edge softness: <span id="ps-edge-soft-person-val">1 px</span></span>
-              <input id="ps-edge-soft-person" class="ps-range" type="range" min="0" max="5" step="0.5" value="1" />
-            </div>
-            <div class="btn-row">
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="person">Apply</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="person">Refine in Photoshop</div>
             </div>
           </div>
           <div class="ps-main">
@@ -834,19 +847,22 @@ code {
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-garment" data-mode="subtract">- Remove</div>
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-garment" data-mode="replace">Use selection as garment</div>
           </div>
+          <div class="ps-edges">
+            <span class="field-label">Edges</span>
+            <div class="field">
+              <span class="field-label">Edge softness: <span id="ps-edge-soft-garment-val">3 px</span></span>
+              <input id="ps-edge-soft-garment" class="ps-range" type="range" min="0" max="10" step="0.5" value="3" />
+            </div>
+            <div class="btn-row">
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="garment">Apply</div>
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="garment">Refine in Photoshop</div>
+            </div>
+          </div>
           <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-2"><span id="ps-set-2-arrow">▸</span> Adjust</span>
           <div id="ps-set-2" class="ps-settings hidden">
             <div class="field">
               <span class="field-label">Grow into old-garment fringe (px, not skin or hair)</span>
               <input id="ps-garment-grow" class="input" type="text" value="4" autocomplete="off" spellcheck="false" />
-            </div>
-            <div class="field">
-              <span class="field-label">Edge softness: <span id="ps-edge-soft-garment-val">1 px</span></span>
-              <input id="ps-edge-soft-garment" class="ps-range" type="range" min="0" max="5" step="0.5" value="1" />
-            </div>
-            <div class="btn-row">
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="garment">Apply</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="garment">Refine in Photoshop</div>
             </div>
           </div>
           <div class="ps-main">
@@ -887,6 +903,18 @@ code {
           <div class="btn-row">
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="piping" data-mode="add">+ Add</div>
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="piping" data-mode="subtract">- Remove</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="piping" data-mode="replace">Use selection as piping</div>
+          </div>
+          <div class="ps-edges">
+            <span class="field-label">Edges</span>
+            <div class="field">
+              <span class="field-label">Edge softness: <span id="ps-edge-soft-trims-val">2 px</span></span>
+              <input id="ps-edge-soft-trims" class="ps-range" type="range" min="0" max="10" step="0.5" value="2" />
+            </div>
+            <div class="btn-row">
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="piping">Apply to piping</div>
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="piping">Refine piping</div>
+            </div>
           </div>
           <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-4"><span id="ps-set-4-arrow">▸</span> Adjust</span>
           <div id="ps-set-4" class="ps-settings hidden">
@@ -903,14 +931,6 @@ code {
                 <input id="ps-piping-margin" class="input" type="text" value="6" autocomplete="off" spellcheck="false" />
                 <div class="btn-ghost" role="button" tabindex="0" data-action="ps-piping-remargin">Re-apply</div>
               </div>
-            </div>
-            <div class="field">
-              <span class="field-label">Edge softness: <span id="ps-edge-soft-trims-val">1 px</span></span>
-              <input id="ps-edge-soft-trims" class="ps-range" type="range" min="0" max="5" step="0.5" value="1" />
-            </div>
-            <div class="btn-row">
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="piping">Apply to piping</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="piping">Refine piping</div>
             </div>
           </div>
           <div class="ps-main">
@@ -929,6 +949,18 @@ code {
           <div class="btn-row">
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="buttons" data-mode="add">+ Add</div>
             <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="buttons" data-mode="subtract">- Remove</div>
+            <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-trim" data-trim="buttons" data-mode="replace">Use selection as buttons</div>
+          </div>
+          <div class="ps-edges">
+            <span class="field-label">Edges</span>
+            <div class="field">
+              <span class="field-label">Edge softness: <span id="ps-edge-soft-buttons-val">1.5 px</span></span>
+              <input id="ps-edge-soft-buttons" class="ps-range" type="range" min="0" max="10" step="0.5" value="1.5" />
+            </div>
+            <div class="btn-row">
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="buttons">Apply to buttons</div>
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="buttons">Refine buttons</div>
+            </div>
           </div>
           <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-4b"><span id="ps-set-4b-arrow">▸</span> Adjust</span>
           <div id="ps-set-4b" class="ps-settings hidden">
@@ -938,14 +970,6 @@ code {
                 <input id="ps-trim-shrink" class="input" type="text" value="1" autocomplete="off" spellcheck="false" />
                 <div class="btn-ghost" role="button" tabindex="0" data-action="ps-trim-reshrink">Re-apply</div>
               </div>
-            </div>
-            <div class="field">
-              <span class="field-label">Edge softness: <span id="ps-edge-soft-buttons-val">1 px</span></span>
-              <input id="ps-edge-soft-buttons" class="ps-range" type="range" min="0" max="5" step="0.5" value="1" />
-            </div>
-            <div class="btn-row">
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="buttons">Apply to buttons</div>
-              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-refine" data-target="buttons">Refine buttons</div>
             </div>
           </div>
           <div class="ps-main">
@@ -997,11 +1021,11 @@ code {
               <span id="ps-shapes-link" class="text-link" role="button" tabindex="0" data-action="ps-toggle-shapes">Show shapes</span>
             </div>
           </div>
-          <span class="ps-toggle" role="button" tabindex="0" data-action="ps-toggle-settings" data-target="ps-set-6"><span id="ps-set-6-arrow">▸</span> Adjust</span>
-          <div id="ps-set-6" class="ps-settings hidden">
+          <div class="ps-edges">
+            <span class="field-label">Edges</span>
             <div class="field">
-              <span class="field-label">Edge softness: <span id="ps-edge-soft-parts-val">1 px</span></span>
-              <input id="ps-edge-soft-parts" class="ps-range" type="range" min="0" max="5" step="0.5" value="1" />
+              <span class="field-label">Edge softness: <span id="ps-edge-soft-parts-val">3 px</span></span>
+              <input id="ps-edge-soft-parts" class="ps-range" type="range" min="0" max="10" step="0.5" value="3" />
             </div>
             <div class="btn-row">
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edge-apply" data-target="part">Apply to part</div>

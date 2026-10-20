@@ -109,7 +109,7 @@
           } else if (group.id === "pills-ps-gray-chip") {
             if (typeof psOnGrayChip === "function") psOnGrayChip(value);              // step 5 target gray
           } else if (group.id.indexOf("pills-ps-tc-") === 0) {
-            if (typeof psOnTrimColorChip === "function") psOnTrimColorChip(group.id.slice("pills-ps-tc-".length), value);   // step 4 trim color
+            if (typeof psOnTrimColorChip === "function") psOnTrimColorChip(group.id.slice("pills-ps-tc-".length), value);   // step 7 trim color
           } else if (group.id === "pills-ps-tone-src" || group.id === "pills-ps-tone-print") {
             if (typeof psOnToneChip === "function") psOnToneChip(group.id === "pills-ps-tone-src" ? "src" : "print", value);   // step 8 garment / print
           } else if (group.id === "pills-ps-piping-dir") {
@@ -1394,6 +1394,9 @@
     return { short: short, more: short === t ? null : t };
   }
   function setStatus(kind, text) {
+    // v0.20.3 crash breadcrumb: every busy step is written to printswap-trace.txt BEFORE
+    // it runs, so after a freeze / restart the file shows the last step that started.
+    if (kind === "busy") { try { trace("status: " + text); traceFlush(); } catch (_) {} }
     let k = kind;
     if (k === "bad" && !STATUS_ERROR.test(String(text || ""))) k = "warn";   // a step to do first: orange, not an error
     if (k === "ok" && /MERGED could not be rebuilt/.test(String(text || ""))) k = "bad";   // kept, but the final failed: an error
@@ -2419,7 +2422,10 @@
     if (generateInFlight) { kbBusyNote(); return; }
     generateInFlight = true;
     kbDeleteFails = [];
-    try { await recallAccept(); }
+    try {
+      if (await psTrimAcceptGuard()) return;                        // a selection not saved to the trim: asked first
+      await recallAccept();
+    }
     catch (e) { try { setStatus("bad", (e && e.message) || String(e)); } catch (_) {} }
     finally { generateInFlight = false; kbDeleteFailShow(); }
   }
@@ -2651,6 +2657,13 @@
   // SAM_MAX_EDGE (SAM gains nothing from more, and a full 8K data URI would
   // be a very large upload). Must be called inside executeAsModal.
   // rect (doc px) defaults to the whole canvas; a smaller rect = a close-up crop.
+  //
+  // v0.20.4: read at NATIVE resolution and resample on the CPU (kbResamplePlane)
+  // instead of asking imaging.getPixels to resize via `targetSize`. That resize was
+  // the last Photoshop-GPU-driven call left in the Lighten-background pipeline —
+  // Select Subject and Select and Mask are already off on this machine for the same
+  // reason (see PS_PERSON_SELECT_SUBJECT / PS_HAIR_SELECT_AND_MASK). This mirrors
+  // kbReadLayersSmall, which already avoids `targetSize` the same way.
   async function kbReadCompositeSmall(rect) {
     const ps = psMod();
     const doc = ps.app.activeDocument;
@@ -2662,27 +2675,50 @@
     const rw = r.right - r.left, rh = r.bottom - r.top;
     if (!(rw > 0 && rh > 0)) throw new Error("Empty area to read.");
 
-    const opts = {
+    const pr = await ps.imaging.getPixels({
       documentID: doc.id,
       sourceBounds: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
       applyAlpha: true,
       componentSize: 8,
-    };
-    const longEdge = Math.max(rw, rh);
-    if (longEdge > SAM_MAX_EDGE) {
-      const s = SAM_MAX_EDGE / longEdge;
-      opts.targetSize = { width: Math.max(1, Math.round(rw * s)), height: Math.max(1, Math.round(rh * s)) };
-    }
-    const pr = await ps.imaging.getPixels(opts);
+    });
     if (!pr || !pr.imageData) throw new Error("imaging.getPixels returned no imageData.");
-    const sentW = pr.imageData.width, sentH = pr.imageData.height;
-    let encoded;
-    try { encoded = await ps.imaging.encodeImageData({ imageData: pr.imageData }); }
-    finally { try { pr.imageData.dispose(); } catch (_) {} }
-    const base64 = kbEncodedToBase64(encoded).replace(/\s+/g, "");
+    const img = pr.imageData;
+    let r8, g8, b8, nw, nh;
+    try {
+      nw = img.width; nh = img.height;
+      const d = await img.getData({ chunky: true });
+      const c = img.components || Math.round(d.length / (nw * nh));
+      const n = nw * nh;
+      r8 = new Uint8Array(n); g8 = new Uint8Array(n); b8 = new Uint8Array(n);
+      for (let k = 0, p = 0; k < n; k++, p += c) { r8[k] = d[p]; g8[k] = d[c >= 3 ? p + 1 : p]; b8[k] = d[c >= 3 ? p + 2 : p]; }
+    } finally { try { img.dispose(); } catch (_) {} }
+
+    let tw = nw, th = nh;
+    const longEdge = Math.max(nw, nh);
+    if (longEdge > SAM_MAX_EDGE) { const k2 = SAM_MAX_EDGE / longEdge; tw = Math.max(1, Math.round(nw * k2)); th = Math.max(1, Math.round(nh * k2)); }
+    const rr = kbResamplePlane(r8, nw, nh, tw, th), gg = kbResamplePlane(g8, nw, nh, tw, th), bb = kbResamplePlane(b8, nw, nh, tw, th);
+
+    // JPEG through Photoshop's encoder when it can build image data from a buffer; else a PNG.
+    let base64 = null;
+    if (ps.imaging && typeof ps.imaging.createImageDataFromBuffer === "function") {
+      let img2 = null;
+      try {
+        const rgb = new Uint8Array(tw * th * 3);
+        for (let k = 0, o = 0; k < tw * th; k++, o += 3) { rgb[o] = rr[k]; rgb[o + 1] = gg[k]; rgb[o + 2] = bb[k]; }
+        img2 = await ps.imaging.createImageDataFromBuffer(rgb, { width: tw, height: th, components: 3, chunky: true, colorSpace: "RGB", colorProfile: "sRGB IEC61966-2.1" });
+        base64 = kbEncodedToBase64(await ps.imaging.encodeImageData({ imageData: img2, base64: true })).replace(/\s+/g, "");
+      } catch (e) { base64 = null; try { console.warn(TAG, "sam: JPEG from buffer refused, sending PNG:", e); } catch (_) {} }
+      finally { try { if (img2) img2.dispose(); } catch (_) {} }
+    }
+    if (!base64) {
+      const rgba = new Uint8Array(tw * th * 4);
+      for (let k = 0, o = 0; k < tw * th; k++, o += 4) { rgba[o] = rr[k]; rgba[o + 1] = gg[k]; rgba[o + 2] = bb[k]; rgba[o + 3] = 255; }
+      const bytes = psPngRgba(rgba, tw, th);
+      base64 = bytesToBase64(bytes.buffer.byteLength === bytes.length ? bytes.buffer : bytes.slice().buffer);
+    }
     const mime = kbMimeOfBase64(base64);
-    try { console.log(TAG, "sam: composite for SAM " + sentW + "x" + sentH + " from " + JSON.stringify(r) + " (doc " + docW + "x" + docH + "), " + mime + ", b64.len=" + base64.length); } catch (_) {}
-    return { base64: base64, mime: mime, docW: docW, docH: docH, sentW: sentW, sentH: sentH, rect: r };
+    try { console.log(TAG, "sam: composite for SAM " + tw + "x" + th + " from " + JSON.stringify(r) + " (doc " + docW + "x" + docH + "), " + mime + ", b64.len=" + base64.length); } catch (_) {}
+    return { base64: base64, mime: mime, docW: docW, docH: docH, sentW: tw, sentH: th, rect: r };
   }
 
   // The close-up SAM sees in steps 4 and 6, read straight from layers by id (nothing
@@ -3323,12 +3359,20 @@
   }
 
   // Inside executeAsModal: brightness (0–255) of the photo layer over bbox, plus
-  // which pixels the layer actually covers. Returns { luma, valid } (bw × bh).
-  async function kbReadGarmentLuma(layerId, bbox) {
+  // which pixels the layer actually covers. Returns { luma, valid, alpha }.
+  // outSize = { W, H } (optional): return the planes already resampled to W × H with
+  // the SAME bilinear as kbResamplePlane — identical result, but no full-resolution
+  // plane is ever held. The layer is always read in horizontal STRIPS of about
+  // KB_STRIP_PX pixels, so memory stays small however large the document is
+  // (v0.20.3: a single full-document read could exhaust memory on big / 16-bit files).
+  const KB_STRIP_PX = 4 * 1024 * 1024;
+  async function kbReadGarmentLuma(layerId, bbox, outSize) {
     const ps = psMod();
     const doc = ps.app.activeDocument;
     const bw = bbox.right - bbox.left, bh = bbox.bottom - bbox.top;
-    const luma = new Uint8Array(bw * bh), valid = new Uint8Array(bw * bh), alpha = new Uint8Array(bw * bh);
+    const grid = !!(outSize && outSize.W > 0 && outSize.H > 0 && (outSize.W !== bw || outSize.H !== bh));
+    const W = grid ? outSize.W : bw, H = grid ? outSize.H : bh;
+    const luma = new Uint8Array(W * H), valid = new Uint8Array(W * H), alpha = new Uint8Array(W * H);
     const layer = kbLayerById(layerId);
     if (!layer) return { luma: luma, valid: valid, alpha: alpha };
     const lb = layer.bounds;
@@ -3337,29 +3381,100 @@
       right: Math.min(bbox.right, Math.ceil(Number(lb.right) || 0)), bottom: Math.min(bbox.bottom, Math.ceil(Number(lb.bottom) || 0)),
     };
     if (!(sb.right > sb.left && sb.bottom > sb.top)) return { luma: luma, valid: valid, alpha: alpha };
-    const pr = await getLayerPixels8({ documentID: doc.id, layerID: layerId, sourceBounds: sb, componentSize: 8 });   // 16-bit safe
-    const img = pr && pr.imageData;
-    if (!img) return { luma: luma, valid: valid, alpha: alpha };
-    try {
-      const got = pr.sourceBounds || sb;
-      const gl = Math.round(Number(got.left)), gt = Math.round(Number(got.top));
-      const d = await img.getData({ chunky: true });
-      const w = img.width, hgt = img.height, c = img.components || Math.round(d.length / (w * hgt));
-      for (let y = 0; y < hgt; y++) {
-        const oy = gt + y - bbox.top;
-        if (oy < 0 || oy >= bh) continue;
-        for (let x = 0; x < w; x++) {
-          const ox = gl + x - bbox.left;
-          if (ox < 0 || ox >= bw) continue;
-          const p = (y * w + x) * c;
-          const o = oy * bw + ox;
-          alpha[o] = c === 4 ? d[p + 3] : 255;
-          luma[o] = c >= 3 ? ((d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8) : d[p];
-          if (c === 4 && d[p + 3] < 128) continue;
-          valid[o] = 1;
+
+    // Grid mode: the bilinear tables of kbResamplePlane (source bw × bh → W × H).
+    let x0s = null, x1s = null, fxs = null, need = null, hL = null, hA = null, rowL = null, rowA = null;
+    if (grid) {
+      x0s = new Int32Array(W); x1s = new Int32Array(W); fxs = new Int32Array(W);
+      const kx = bw / W, ky = bh / H;
+      for (let x = 0; x < W; x++) {
+        let fx = (x + 0.5) * kx - 0.5; if (fx < 0) fx = 0;
+        let x0 = Math.floor(fx); if (x0 > bw - 1) x0 = bw - 1;
+        const x1 = x0 + 1 < bw ? x0 + 1 : bw - 1;
+        x0s[x] = x0; x1s[x] = x1; fxs[x] = Math.round((fx - x0) * 256); if (fxs[x] > 256) fxs[x] = 256;
+      }
+      need = new Uint8Array(bh);
+      for (let y = 0; y < H; y++) {
+        let fy = (y + 0.5) * ky - 0.5; if (fy < 0) fy = 0;
+        let y0 = Math.floor(fy); if (y0 > bh - 1) y0 = bh - 1;
+        const y1 = y0 + 1 < bh ? y0 + 1 : bh - 1;
+        need[y0] = 1; need[y1] = 1;
+      }
+      hL = new Array(bh); hA = new Array(bh);              // horizontally resampled source rows (W wide), only the needed ones
+      rowL = new Uint8Array(bw); rowA = new Uint8Array(bw);
+    }
+
+    const sw = sb.right - sb.left;
+    const stripRows = Math.max(1, Math.floor(KB_STRIP_PX / sw));
+    for (let st = sb.top; st < sb.bottom; st += stripRows) {
+      const sbot = Math.min(sb.bottom, st + stripRows);
+      if (grid) {                                           // skip strips that hold no needed row
+        let any = false;
+        for (let r = st; r < sbot; r++) if (need[r - bbox.top]) { any = true; break; }
+        if (!any) continue;
+      }
+      const pr = await getLayerPixels8({ documentID: doc.id, layerID: layerId, sourceBounds: { left: sb.left, top: st, right: sb.right, bottom: sbot }, componentSize: 8 });   // 16-bit safe
+      const img = pr && pr.imageData;
+      if (!img) continue;
+      try {
+        const got = pr.sourceBounds || { left: sb.left, top: st };
+        const gl = Math.round(Number(got.left)), gt = Math.round(Number(got.top));
+        let d = await img.getData({ chunky: true });
+        const w = img.width, hgt = img.height, c = img.components || Math.round(d.length / (w * hgt));
+        for (let y = 0; y < hgt; y++) {
+          const oy = gt + y - bbox.top;
+          if (oy < 0 || oy >= bh) continue;
+          if (grid) {
+            if (!need[oy]) continue;
+            rowL.fill(0); rowA.fill(0);
+            for (let x = 0; x < w; x++) {
+              const ox = gl + x - bbox.left;
+              if (ox < 0 || ox >= bw) continue;
+              const p = (y * w + x) * c;
+              rowA[ox] = c === 4 ? d[p + 3] : 255;
+              rowL[ox] = c >= 3 ? ((d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8) : d[p];
+            }
+            const tl = new Uint16Array(W), ta = new Uint16Array(W);
+            for (let x = 0; x < W; x++) {
+              const wx = fxs[x], i0 = x0s[x], i1 = x1s[x];
+              tl[x] = rowL[i0] * (256 - wx) + rowL[i1] * wx;
+              ta[x] = rowA[i0] * (256 - wx) + rowA[i1] * wx;
+            }
+            hL[oy] = tl; hA[oy] = ta;
+          } else {
+            for (let x = 0; x < w; x++) {
+              const ox = gl + x - bbox.left;
+              if (ox < 0 || ox >= bw) continue;
+              const p = (y * w + x) * c;
+              const o = oy * bw + ox;
+              alpha[o] = c === 4 ? d[p + 3] : 255;
+              luma[o] = c >= 3 ? ((d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8) : d[p];
+              if (c === 4 && d[p + 3] < 128) continue;
+              valid[o] = 1;
+            }
+          }
+        }
+        d = null;
+      } finally { try { img.dispose(); } catch (_) {} }
+    }
+
+    if (grid) {                                             // vertical pass, exactly as kbResamplePlane
+      const ky = bh / H;
+      for (let y = 0; y < H; y++) {
+        let fy = (y + 0.5) * ky - 0.5; if (fy < 0) fy = 0;
+        let y0 = Math.floor(fy); if (y0 > bh - 1) y0 = bh - 1;
+        const y1 = y0 + 1 < bh ? y0 + 1 : bh - 1;
+        let wy = Math.round((fy - y0) * 256); if (wy > 256) wy = 256;
+        const l0 = hL[y0], l1 = hL[y1], a0 = hA[y0], a1 = hA[y1], o = y * W;
+        for (let x = 0; x < W; x++) {
+          const tl = l0 ? l0[x] : 0, bl = l1 ? l1[x] : 0, ta = a0 ? a0[x] : 0, ba = a1 ? a1[x] : 0;
+          luma[o + x] = (tl * (256 - wy) + bl * wy + 32768) >> 16;
+          const av = (ta * (256 - wy) + ba * wy + 32768) >> 16;
+          alpha[o + x] = av;
+          if (av >= 128) valid[o + x] = 1;
         }
       }
-    } finally { try { img.dispose(); } catch (_) {} }
+    }
     return { luma: luma, valid: valid, alpha: alpha };
   }
 
@@ -3410,12 +3525,12 @@
     if (!masks.length || srcId == null) return false;
     const ps = psMod();
     let g = null;
-    await ps.core.executeAsModal(async function () { g = await kbReadGarmentLuma(srcId, { left: 0, top: 0, right: docW, bottom: docH }); },
+    await ps.core.executeAsModal(async function () { g = await kbReadGarmentLuma(srcId, { left: 0, top: 0, right: docW, bottom: docH }, { W: gw, H: gh }); },
       { commandName: "KBImage — read photo for edges" });
     let cover = 0; for (let k = 0; k < g.valid.length; k++) cover += g.valid[k];
     if (cover < 16) return false;
     let luma = g.luma, alpha = g.alpha;
-    if (docW !== gw || docH !== gh) { luma = kbResamplePlane(luma, docW, docH, gw, gh); alpha = kbResamplePlane(alpha, docW, docH, gw, gh); }
+    // already gw × gh: kbReadGarmentLuma resampled while reading (v0.20.3)
     const N = gw * gh, guide = new Float32Array(N);
     for (let k = 0; k < N; k++) guide[k] = luma[k] / 255;
     const r = Math.max(3, Math.round(Math.min(gw, gh) * 0.004));
@@ -4004,28 +4119,63 @@
   // open to sample (for example the print's ground color).
   async function actPsGrayCustom() {
     if (generateInFlight) { psGrayFaceSync(); return; }
-    const ps = psMod();
     const t = psTargetHex() || { rgb: kbParseHex(PS_GRAY_DEFAULT) };
-    let res = null;
-    try {
-      await ps.core.executeAsModal(async function () {
-        res = await ps.action.batchPlay([{ _obj: "showColorPicker", context: "Print Swap target gray",
-          color: { _obj: "RGBColor", red: t.rgb[0], grain: t.rgb[1], blue: t.rgb[2] }, _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: false });
-      }, { commandName: "KBImage — pick gray" });
-    } catch (e) { traceErr("ps gray: color picker", e); setStatus("bad", "The color picker did not open: " + ((e && e.message) || String(e))); psGrayFaceSync(); return; }
-    const rgb = psPickerRgb(res && res[0]);
+    let rgb = null;
+    try { rgb = await psPickColor("Print Swap target gray", t.rgb, "KBImage — pick gray"); }
+    catch (e) { traceErr("ps gray: color picker", e); setStatus("bad", "The color picker did not open: " + ((e && e.message) || String(e))); psGrayFaceSync(); return; }
     if (!rgb) { setStatus("ok", "Custom gray: nothing picked."); psGrayFaceSync(); return; }
     await psGraySet(rgb, "picker");
   }
-  // Pure: the RGB out of a showColorPicker result (color / RGBFloatColor; green as grain),
-  // or null (cancelled).
-  function psPickerRgb(r) {
-    if (!r) return null;
-    const c = r.color || r.RGBFloatColor || r.rgbFloatColor || r;
-    if (!c || typeof c !== "object") return null;
-    let R = Number(c.red), G = Number(c.grain != null ? c.grain : c.green), B = Number(c.blue);
+  // Photoshop's color picker (shown, synchronous: v0.20.7 — with dontDisplay + async the
+  // pick was lost), starting at `start`. The raw result goes in the trace. Nothing in the
+  // result: the foreground color, if the picker changed it. Returns [r, g, b] or null.
+  async function psPickColor(context, start, commandName) {
+    const ps = psMod();
+    const fg = psForegroundRgb();
+    let res = null;
+    await ps.core.executeAsModal(async function () {
+      res = await ps.action.batchPlay([{ _obj: "showColorPicker", context: context,
+        color: { _obj: "RGBColor", red: start[0], grain: start[1], blue: start[2] }, _options: { dialogOptions: "display" } }], { synchronousExecution: true });
+    }, { commandName: commandName });
+    let raw = ""; try { raw = JSON.stringify(res); } catch (_) { raw = String(res); }
+    let rgb = psPickerRgb(Array.isArray(res) ? res[0] : res);
+    let note = "color picker (" + context + ") result: " + raw + " → " + (rgb ? psHex(rgb) : "nothing");
+    // Nothing read, or only the start color back: the foreground color, if the picker changed it.
+    if (!rgb || rgb.join() === start.join()) {
+      const now = psForegroundRgb();
+      if (now && (!fg || now.join() !== fg.join())) { rgb = now; note += "; the foreground color " + psHex(now) + " used"; }
+    }
+    trace(note);
+    kbPickerNote = note;                                // a run that starts its own trace right after puts it back (traceStart clears)
+    return rgb;
+  }
+  let kbPickerNote = null;
+  function psForegroundRgb() {
+    try {
+      const c = psMod().app.foregroundColor, r = c && c.rgb;
+      if (!r) return null;
+      return psPickerRgb({ red: r.red, green: r.green, blue: r.blue }, false);
+    } catch (_) { return null; }
+  }
+  // Pure: the RGB out of a showColorPicker result, or null (cancelled). Shapes seen: the
+  // color under color / RGBFloatColor / foregroundColor (or the result itself), each value a
+  // number or { _value }, green as "grain" or "green", 0–1 floats (RGBFloatColor, or every
+  // value ≤ 1 with a fraction) or 0–255. float: true / false forces the scale.
+  function psPickerRgb(r, float) {
+    if (!r || typeof r !== "object") return null;
+    // v0.20.10: the picked color first. The result also echoes the `color` the picker was
+    // opened with (the start color), so reading `color` first always gave the start back
+    // (white on a trim at Original).
+    const keys = ["RGBFloatColor", "rgbFloatColor", "foregroundColor", "colour", "color"];
+    let c = null, isFloat = float;
+    for (let i = 0; i < keys.length && !c; i++) if (r[keys[i]] && typeof r[keys[i]] === "object") { c = r[keys[i]]; if (isFloat == null && /float/i.test(keys[i])) isFloat = true; }
+    if (!c) c = r;
+    if (isFloat == null && c._obj && /float/i.test(String(c._obj))) isFloat = true;
+    const num = function (v) { if (v && typeof v === "object" && v._value != null) v = v._value; return Number(v); };
+    let R = num(c.red), G = num(c.grain != null ? c.grain : c.green), B = num(c.blue);
     if (!(isFinite(R) && isFinite(G) && isFinite(B))) return null;
-    if (R <= 1 && G <= 1 && B <= 1 && (R % 1 || G % 1 || B % 1)) { R *= 255; G *= 255; B *= 255; }
+    if (isFloat == null) isFloat = R <= 1 && G <= 1 && B <= 1 && !!(R % 1 || G % 1 || B % 1);
+    if (isFloat) { R *= 255; G *= 255; B *= 255; }
     const cl = function (v) { return Math.max(0, Math.min(255, Math.round(v))); };
     return [cl(R), cl(G), cl(B)];
   }
@@ -4236,6 +4386,8 @@
     }
     const had = kbChannelExists(PS_GARMENT_CH);
     if (!had && mode === "subtract") { setStatus("bad", "There is no garment yet. Click Find garment, or select it and use + Add."); return; }
+    // A hand fix on GREY exact's mask since the last build: fold it back in first.
+    try { await psSyncHandEdits([PS_GARMENT_CH]); } catch (e) { traceErr("ps hand-edit sync (edit garment)", e); }
     generateInFlight = true;
     traceStart("Print Swap — " + (mode === "replace" ? "selection as" : verb) + " garment");
     try {
@@ -5171,7 +5323,6 @@
     "RIGHT NECK", "LEFT NECK", "LEFT COLLAR", "RIGHT COLLAR", "LEFT PANT TRIM", "RIGHT PANT TRIM", "LEFT HAND", "RIGHT HAND",
     "LEFT TOP", "RIGHT TOP", "LEFT PANT", "RIGHT PANT"];
 
-  let psPartsArmUntil = 0;                            // two clicks to replace accepted parts
   let psPartsArmTimer = null;
   // The two-click warning, under the Find parts button only (gone after 5 seconds).
   function psPartsArmNote(on) {
@@ -6911,18 +7062,16 @@
     if (!gt) { setStatus("bad", "Pick the garment type in step 2 first."); return; }
     const checkedNow = Array.from(psCheckedFor(gt));
     if (!checkedNow.length) { setStatus("bad", "Check at least one part to find."); return; }
-    // Accepted parts (maybe fixed by hand) are replaced only on a second click. Only the part
-    // groups go, with their KBPS part channels: never PS, PB, SDW or Backup. A PARTS group
-    // (older files) goes whole; a preview still waiting is replaced by the new run.
+    // Accepted parts are replaced; a hand fix on any of them is replaced only on a second
+    // click. Only the part groups go, with their KBPS part channels: never PS, PB, SDW or
+    // Backup. A PARTS group (older files) goes whole; a preview still waiting is replaced
+    // by the new run.
     const olds = psPartGroupsAll();
     const old = olds.some(function (g) { return psIsPending(g.id); }) ? [] : olds;   // a preview waiting: the new run replaces it
     if (old.length) {
-      if (Date.now() > psPartsArmUntil) {
-        psPartsArmUntil = Date.now() + 5000;
-        psPartsArmNote(true);
-        return;
-      }
-      psPartsArmUntil = 0;
+      const chs = old.map(function (g) { return PS_PART_CH + String(g.name); });
+      const handSync = await psSyncHandEdits(chs, { confirmLabel: "Finding parts again replaces the part shapes.", confirmActionLabel: "Find parts", armKey: "parts" });
+      if (handSync.needsConfirm) { psPartsArmNote(true); return; }
       psPartsArmNote(false);
       const names = [];
       old.forEach(function (g) { names.push(String(g.name)); });
@@ -6960,6 +7109,7 @@
         },
       });
       trace("ps parts: done");
+      try { await psHandEditRemember(psPartNames().map(function (n) { return PS_PART_CH + n; })); } catch (e) { traceErr("ps hand-edit remember (find parts)", e); }
       const miss = p.missing || [];
       // Not found is neutral: those parts are not in this photo. They are unchecked, so steps
       // 7 to 9 skip them; check one again and add it with + Add if it is there.
@@ -7013,6 +7163,10 @@
       }
       if (!kbChannelExists(ch)) { setStatus("bad", name + " has no pixels to remove."); return; }
     }
+    // + Add can also pull pixels out of other parts (rule 1): fold in a hand fix on any
+    // part's shape layer first, so it survives this touch-up's redraw.
+    try { await psSyncHandEdits(psPartNames().map(function (n) { return PS_PART_CH + n; })); }
+    catch (e) { traceErr("ps hand-edit sync (edit part)", e); }
     generateInFlight = true;
     traceStart("Print Swap — " + (mode === "add" ? "add to " : "remove from ") + name);
     const changed = [name];
@@ -7078,6 +7232,7 @@
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
       trace("ps edit part: " + mode + " " + name + ", redrawn: " + changed.join(", "));
+      try { await psHandEditRemember(changed.map(function (n) { return PS_PART_CH + n; })); } catch (e) { traceErr("ps hand-edit remember (edit part)", e); }
       setStatus("ok", (mode === "add" ? "Added to " : "Removed from ") + name + "."
         + (changed.length > 1 ? " Also updated: " + changed.slice(1).join(", ") + "." : "") + " " + name + " is selected.");
     } catch (err) {
@@ -7489,6 +7644,75 @@
     for (let i = 0; i < ids.length; i++) await psDeleteLayerInModal(ids[i]);
   }
 
+  // ----- Repair clipping (v0.20.8) ------------------------------------------------
+  // In every part group under PS › PARTS: the "<NAME> shape" layer is the clipping base, its
+  // PRINT layer(s) sit directly above it clipped to it, and anything the part clips above
+  // the print (the neck's Hue/Saturation 2) stays clipped. The 0.20.5 hand-edit reads added
+  // and deleted a copy under the base, which unclipped every PRINT (the print filled the
+  // part's rectangle). Run by Apply print and before Finish stamps. Moves only what is out
+  // of place; returns what it fixed ("PART: …").
+  function psClipped(l) { try { return !!l.isClippingMask; } catch (_) { return false; } }
+  async function psSetClipInModal(l, on) {
+    try { l.isClippingMask = on; } catch (_) {}
+    if (psClipped(l) === on) return true;
+    if (!on) return false;
+    await psSelectLayerVerifiedInModal(l.id, String(l.name));    // DOM setter refused: Create Clipping Mask on it
+    await psClipActiveInModal();
+    return psClipped(l);
+  }
+  async function psRepairClipInModal() {
+    const EP = psMod().constants.ElementPlacement, fixed = [];
+    const P = psPsGroup();                                         // a leftover temp layer between a PRINT and its shape goes first
+    if (P) (await psSweepTmpInPsInModal(P)).forEach(function (n) { fixed.push("temporary layer " + n + " deleted"); });
+    const groups = psPartGroupsAll();
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi], name = String(g.name);
+      const kids = function () { try { return Array.from(g.layers); } catch (_) { return []; } };
+      const shape = kids().find(function (l) { return String(l.name) === name + " shape"; });
+      if (!shape) continue;
+      const prints = kids().filter(function (l) { return String(l.name) === PS_PRINT_LAYER; });
+      if (!prints.length) continue;
+      const fix = function (what) { fixed.push(name + ": " + what); };
+      try {
+        if (psClipped(shape)) { await kbUnlockOneInModal(shape); if (!(await psSetClipInModal(shape, false))) fix("“" + shape.name + "” could NOT be unclipped"); else fix("the shape layer was itself clipped: unclipped"); }
+        // PRINT directly above the shape (the lowest one first, so several stack up on it)
+        for (let i = prints.length - 1; i >= 0; i--) {
+          const p = prints[i], L = kids();
+          const at = L.findIndex(function (l) { return l.id === p.id; }), sAt = L.findIndex(function (l) { return l.id === shape.id; });
+          const between = sAt > at ? L.slice(at + 1, sAt).filter(function (l) { return String(l.name) !== PS_PRINT_LAYER; }) : null;
+          if (sAt < at || (between && between.length)) {
+            await kbUnlockOneInModal(p);
+            p.move(shape, EP.PLACEBEFORE);
+            fix("PRINT moved directly above the shape" + (between && between.length ? " (from above " + between.map(function (l) { return "“" + l.name + "”"; }).join(", ") + ")" : " (it was under it)"));
+          }
+        }
+        // every PRINT, and what the part clips on top of it, clipped
+        const L = kids(), sAt = L.findIndex(function (l) { return l.id === shape.id; });
+        for (let i = sAt - 1; i >= 0; i--) {
+          const l = L[i], n = String(l.name);
+          if (n !== PS_PRINT_LAYER && n !== "Hue/Saturation 2") break;      // the clip stack ends at the first other layer
+          if (psClipped(l)) continue;
+          await kbUnlockOneInModal(l);
+          fix("“" + n + "” " + ((await psSetClipInModal(l, true)) ? "clipped again" : "could NOT be clipped"));
+        }
+      } catch (e) { fix("repair failed — " + ((e && e.message) || String(e))); }
+    }
+    return fixed;
+  }
+  // Outside a modal (or inside one: inModal true). Traces and logs what was fixed.
+  async function psRepairClip(why, inModal) {
+    let fixed = [];
+    try {
+      if (inModal) fixed = await psRepairClipInModal();
+      else await psMod().core.executeAsModal(async function () { fixed = await psRepairClipInModal(); }, { commandName: "KBImage — repair clipping" });
+    } catch (e) { traceErr("ps repair clipping (" + why + ")", e); return []; }
+    if (fixed.length) {
+      trace("ps repair clipping (" + why + "): " + fixed.join("; "));
+      try { const rec = logRecordSkeleton("printswap:repair-clip", { why: why, fixed: fixed }, null, "parts"); await logRun(rec); await logFinalizeCommitted(rec.id); } catch (_) {}
+    } else trace("ps repair clipping (" + why + "): every PRINT is clipped to its shape");
+    return fixed;
+  }
+
   // Inside executeAsModal: Create Clipping Mask on the active layer. Throws
   // Photoshop's exact error.
   async function psClipActiveInModal() {
@@ -7613,6 +7837,8 @@
         state.parts[name] = pst;
         if (id != null) { ids.push(id); placed.push(name); } else empty.push(name);
       }
+      step = "repairing the clipping";
+      params.clipFixed = (await psRepairClip("Apply print")).length;   // every part's PRINT clipped to its shape (parts not printed now too)
       step = "saving the scale and angles";
       params.savedInDoc = await psStateSave(state);
       params.placed = placed.length; params.empty = empty;
@@ -7633,6 +7859,10 @@
     if (!psPartsGroup()) { setStatus("bad", "Find parts and Accept them first (step 6)."); return; }
     if (psOtherPending("printswap:print")) { setStatus("bad", psPendingBlockText("Apply print")); return; }
     if (!psPrint) { setStatus("bad", "Click Swap print first."); return; }
+    // Each part's print geometry is measured from KBPS garment / KBPS part <NAME>; fold in
+    // a hand-painted shape-layer edit first, so the channel agrees with what is on screen.
+    try { await psSyncHandEdits([PS_GARMENT_CH].concat(psPartNames().map(function (n) { return PS_PART_CH + n; }))); }
+    catch (e) { traceErr("ps hand-edit sync (print)", e); }
     const op = keepAngles ? "printswap:print-swap" : "printswap:print";
     const params = function () { return { printName: psPrint ? psPrint.name : null, scalePct: psPrintScale(), keepAngles: !!keepAngles, partScale: partScale || null }; };   // the scale in the box
     const p = params();
@@ -7652,13 +7882,14 @@
             const m = "Backup not made: " + String((e && e.message) || e).replace(/[.\s]+$/, "") + ".";
             psBackupNote(m);
             return { kind: "bad", text: "Print accepted. " + m };
-          } finally { await traceFlush(); }
+          } finally { await psRepairClip("Apply print accepted"); await traceFlush(); }   // Backup's moves never leave a PRINT unclipped
           return null;
         },
       });
       psPartScaleTyped = null;
       setStatus("ok", (sameScale ? "Print applied: " : keepAngles ? "Replaced with " : "Placed ") + p.printName + " at " + p.scalePct + "% in " + p.placed + " part(s)"
         + (p.empty && p.empty.length ? " (no pixels, no print: " + p.empty.join(", ") + ")" : "")
+        + (p.clipFixed ? ". Clipping repaired in " + p.clipFixed + " place(s) (see the trace)" : "")
         + "." + (p.savedInDoc ? "" : " The scale and angles were saved in the plug-in folder only (the document did not take them).")
         + " Accept to keep, or Re-run.");
     } catch (err) {
@@ -7691,13 +7922,53 @@
     try { walk(psMod().app.activeDocument.layers); } catch (_) {}
     return out;
   }
+  // Every layer (groups' contents too) that pred accepts, top → bottom.
+  function kbLayersWhere(pred, root) {
+    const out = [];
+    const walk = function (list) { try { for (let i = 0; i < list.length; i++) { const l = list[i]; try { if (pred(l)) out.push(l); } catch (_) {} let k = null; try { k = l.layers; } catch (_) {} if (k) walk(k); } } catch (_) {} };
+    try { walk(root ? root.layers : psMod().app.activeDocument.layers); } catch (_) {}
+    return out;
+  }
   function psParentId(l) { let p = null; try { p = l && l.parent; } catch (_) {} return p ? p.id : null; }
+  // A layer's state that decides whether Photoshop lets it move, or move next to it.
+  function psLayerLocked(l) { try { return !!(l.allLocked || l.positionLocked); } catch (_) { return false; } }
+  function psLayerDiag(l) {
+    if (!l) return "none";
+    const f = [];
+    const get = function (k) { try { return l[k]; } catch (_) { return undefined; } };
+    if (get("allLocked")) f.push("all locked");
+    if (get("positionLocked")) f.push("position locked");
+    if (get("pixelsLocked")) f.push("pixels locked");
+    if (get("isClippingMask")) f.push("clipped");
+    if (get("isBackgroundLayer")) f.push("Background");
+    if (get("layers")) f.push("group");
+    let parent = "top level"; try { if (l.parent) parent = "in " + l.parent.name; } catch (_) {}
+    return "“" + get("name") + "” (" + get("id") + ", " + (f.length ? f.join(", ") : "unlocked") + ", " + parent + ")";
+  }
+  // Inside executeAsModal: temporary layers an interrupted run left in PS (kb_…, KBPS_tmp…),
+  // deleted before Backup is made. Returns their names.
+  async function psSweepTmpInPsInModal(P) {
+    const left = kbLayersWhere(function (l) { const n = String(l.name); return n.indexOf("kb_") === 0 || n.indexOf("KBPS_tmp") === 0; }, P);
+    const names = [];
+    for (let i = 0; i < left.length; i++) {
+      const nm = psLayerDiag(left[i]);
+      const f = await kbDeleteLayerSafeInModal(left[i].id);
+      names.push(nm + (f ? " NOT removed: " + f.why : ""));
+    }
+    if (names.length) trace("ps backup: temporary layers left in " + PS_PS_GROUP + ": " + names.join("; "));
+    return names;
+  }
   // Inside executeAsModal: a new, empty, hidden Backup at the bottom of PS (never inside
   // PARTS), made around one empty placeholder layer, which is returned to select: a file
   // placed with it selected lands inside Backup. Returns { gid, tmpId }.
+  // v0.20.7 ("Invalid target for move"): leftover temp layers in PS go first; each move is
+  // named in the error with the layers' state; moving to the bottom falls back to
+  // PLACEATEND, then to right after the last layer of PS that is not locked (Photoshop will
+  // not move a locked layer, and the bottom-of-group move moves the bottom layer itself).
   async function psBackupMakeInModal() {
     const ps = psMod(), EP = ps.constants.ElementPlacement, P = psPsGroup();
     if (!P) throw new Error("there is no " + PS_PS_GROUP + " group");
+    await psSweepTmpInPsInModal(P);
     try {
       await ps.action.batchPlay([{ _obj: "selectNoLayers", _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
         _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
@@ -7710,16 +7981,48 @@
     const tmpId = kbActiveLayerId(), tmp = tmpId != null ? kbLayerById(tmpId) : null;
     if (!tmp || String(tmp.name) !== KB_BACKUP_TMP) throw new Error("the empty layer for " + PS_BACKUP_GROUP + " was not made");
     try { tmp.visible = false; } catch (_) {}
-    if (psParentId(tmp) !== P.id) tmp.move(P, EP.PLACEINSIDE);
+    const msg = function (e) { return (e && e.message) || String(e); };
+    if (psParentId(tmp) !== P.id) {
+      try { tmp.move(P, EP.PLACEINSIDE); }
+      catch (e) {
+        trace("ps backup: move into " + PS_PS_GROUP + " (PLACEINSIDE) failed: " + msg(e) + ". " + PS_PS_GROUP + " " + psLayerDiag(P) + ", first in it " + psLayerDiag(P.layers[0]));
+        try { tmp.move(P.layers[0], EP.PLACEBEFORE); }
+        catch (e2) { throw new Error("moving the empty layer into " + PS_PS_GROUP + " failed: PLACEINSIDE " + psLayerDiag(P) + " said “" + msg(e) + "”, PLACEBEFORE " + psLayerDiag(P.layers[0]) + " said “" + msg(e2) + "”"); }
+        if (psParentId(tmp) !== P.id) throw new Error("the empty layer did not land in " + PS_PS_GROUP);
+      }
+    }
+    // the bottom of PS: under PARTS, not in it
+    const tries = [];
+    const atBottom = function () { const L = P.layers; return psParentId(tmp) === P.id && L[L.length - 1].id === tmpId; };
     const last = P.layers[P.layers.length - 1];
-    if (last && last.id !== tmpId) kbPlaceAfterInModal(tmp, last);   // the bottom of PS: under PARTS, not in it
+    if (last && last.id !== tmpId) {
+      try { kbPlaceAfterInModal(tmp, last); } catch (e) { tries.push("after the bottom layer " + psLayerDiag(last) + ": " + msg(e)); }
+      if (!tries.length && !atBottom()) tries.push("after the bottom layer " + psLayerDiag(last) + ": it did not land at the bottom");
+      if (tries.length && EP.PLACEATEND != null) {
+        try { tmp.move(P, EP.PLACEATEND); if (!atBottom()) tries.push("PLACEATEND: it did not land at the bottom"); else tries.push("PLACEATEND: ok"); }
+        catch (e) { tries.push("PLACEATEND: " + msg(e)); }
+      }
+      if (tries.length && !/: ok$/.test(tries[tries.length - 1])) {
+        const L = Array.from(P.layers).filter(function (l) { return l.id !== tmpId; });
+        let free = null; for (let i = L.length - 1; i >= 0 && !free; i--) if (!psLayerLocked(L[i])) free = L[i];
+        if (!free) throw new Error("every layer in " + PS_PS_GROUP + " is locked; tried " + tries.join("; "));
+        try { kbPlaceAfterInModal(tmp, free); tries.push("after the last unlocked layer " + psLayerDiag(free) + ": ok"); }
+        catch (e) { throw new Error("moving the empty layer to the bottom of " + PS_PS_GROUP + " failed; tried " + tries.join("; ") + "; after the last unlocked layer " + psLayerDiag(free) + ": " + msg(e)); }
+      }
+      if (tries.length) trace("ps backup: to the bottom of " + PS_PS_GROUP + ": " + tries.join("; "));
+    }
     const gid = await psGroupInModal([tmpId], PS_BACKUP_GROUP);
     const g = gid != null ? kbLayerById(gid) : null;
     if (!g || String(g.name) !== PS_BACKUP_GROUP) throw new Error("the " + PS_BACKUP_GROUP + " group was not made");
     try { g.visible = false; } catch (_) {}
     psPassThrough(g);
-    const P2 = psPsGroup(), bottom = P2 && P2.layers[P2.layers.length - 1];
-    if (psParentId(g) !== P.id || !bottom || bottom.id !== gid) throw new Error("the " + PS_BACKUP_GROUP + " group did not land at the bottom of " + PS_PS_GROUP);
+    // at the bottom of PS, or only locked layers under it (they could not be moved past)
+    const L2 = Array.from((psPsGroup() || P).layers);
+    let at = -1; for (let i = 0; i < L2.length; i++) if (L2[i].id === gid) at = i;
+    const under = at >= 0 ? L2.slice(at + 1) : [];
+    if (psParentId(g) !== P.id || at < 0 || under.some(function (l) { return !psLayerLocked(l); }))
+      throw new Error("the " + PS_BACKUP_GROUP + " group did not land at the bottom of " + PS_PS_GROUP + " (under it: " + (under.map(psLayerDiag).join(", ") || "nothing") + ")");
+    if (under.length) trace("ps backup: " + PS_BACKUP_GROUP + " sits above locked " + under.map(psLayerDiag).join(", "));
     if (psParentId(kbLayerById(tmpId)) !== gid) throw new Error("the empty layer is not in " + PS_BACKUP_GROUP);
     return { gid: gid, tmpId: tmpId };
   }
@@ -7844,8 +8147,9 @@
       if (psParentId(kbLayerById(l.id)) !== bk.id) throw new Error(String(l.name) + " did not land in " + PS_BACKUP_GROUP);
     }
     if (tmpId != null) await kbDeleteLayerSafeInModal(tmpId);
-    const P = psPsGroup(), last = P.layers[P.layers.length - 1];
-    if (last.id !== bk.id) kbPlaceAfterInModal(bk, last);   // Backup: always at the bottom
+    const L = Array.from(psPsGroup().layers), at = L.findIndex(function (l) { return l.id === bk.id; });
+    let free = null; for (let i = L.length - 1; i > at && !free; i--) if (!psLayerLocked(L[i])) free = L[i];
+    if (free) kbPlaceAfterInModal(bk, free);                 // Backup: at the bottom, or above locked layers there (v0.20.8)
     trace("ps backup: " + strays.length + " PRINT layer(s) moved into " + PS_BACKUP_GROUP + " (hidden): " + strays.map(function (l) { return String(l.name); }).join(", "));
     return strays.length;
   }
@@ -9522,6 +9826,9 @@
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (!kbChannelExists(PS_GARMENT_CH)) { setStatus("bad", "Find the garment first (step 2)."); return; }
     if (psOtherPending("printswap:piping")) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); return; }
+    // A fresh Find replaces PIPING on purpose; ask first if it has a hand edit since the last build.
+    const handSync = await psSyncHandEdits([PS_PIPING_CH], { confirmLabel: "Finding piping again replaces PIPING.", confirmActionLabel: "Find piping", armKey: "find-piping" });
+    if (handSync.needsConfirm) return;
     const p = psPipingParams();
     generateInFlight = true;
     traceStart("Print Swap — Find piping (" + (p.auto ? "auto" : p.mode + ", " + p.tolPct + "%") + ")");
@@ -9660,6 +9967,9 @@
     if (!cachedFalKey) { setStatus("bad", "Add your Fal API key in Settings (gear icon) to find buttons, or select them by hand and use + Add."); return; }
     if (!kbChannelExists(PS_GARMENT_CH)) { setStatus("bad", "Find the garment first (step 2)."); return; }
     if (psOtherPending("printswap:buttons")) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); return; }
+    // A fresh Find replaces BUTTON on purpose; ask first if it has a hand edit since the last build.
+    const handSync = await psSyncHandEdits([PS_BUTTONS_CH], { confirmLabel: "Finding buttons again replaces BUTTON.", confirmActionLabel: "Find buttons", armKey: "find-buttons" });
+    if (handSync.needsConfirm) return;
     const p = { model: PS_SAM_PATH, prompt: "button" };
     generateInFlight = true;
     traceStart("Print Swap — Find buttons (" + PS_SAM_PATH + ")");
@@ -9747,6 +10057,9 @@
   }
 
   // ----- TOUCH UP — + / − the current selection to / from piping or buttons -------
+  // "replace" (Use selection as piping / buttons) — the selection, cut to the garment,
+  // becomes the trim. While that trim's Find preview waits, all three edit the preview,
+  // and Accept builds the group from the edited channel.
   async function actPsEditTrim(srcEl) {
     if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
@@ -9754,20 +10067,31 @@
     const dt = srcEl && srcEl.getAttribute && srcEl.getAttribute("data-trim");
     const which = PS_TRIM_KINDS[dt] ? dt : "piping";
     const ch = PS_TRIM_KINDS[which].ch;
-    const mode = (srcEl && srcEl.getAttribute && srcEl.getAttribute("data-mode")) === "subtract" ? "subtract" : "add";
-    if (!kbSelectionBounds()) { setStatus("bad", "Select the bit to " + (mode === "add" ? "add to" : "remove from") + " the " + which + " first (Lasso or any selection tool)."); return; }
+    const dm = srcEl && srcEl.getAttribute && srcEl.getAttribute("data-mode");
+    const mode = dm === "subtract" ? "subtract" : (dm === "replace" ? "replace" : "add");
+    const verb = mode === "add" ? "add to" : (mode === "subtract" ? "remove from" : "use as");
+    if (!kbSelectionBounds()) { setStatus("bad", "Select the bit to " + verb + " the " + which + " first (Lasso or any selection tool)."); return; }
     const had = kbChannelExists(ch);
     if (!had && mode === "subtract") { setStatus("bad", "There are no " + which + " yet."); return; }
+    const previewing = !!(pendingRecall && pendingRecall.descriptor && String(pendingRecall.descriptor.op) === psTrimOp(which));
+    // A hand fix on the trim group's mask since the last build: fold it back in first.
+    // Not while a Find preview waits: the channel IS the fresh preview, and folding the
+    // old group's mask in would overwrite it (Find already asked about that hand edit).
+    if (!previewing) { try { await psSyncHandEdits([ch]); } catch (e) { traceErr("ps hand-edit sync (edit " + which + ")", e); } }
     generateInFlight = true;
-    traceStart("Print Swap — " + (mode === "add" ? "add to " : "remove from ") + which);
+    traceStart("Print Swap — " + (mode === "replace" ? "selection as " : verb + " ") + which);
     try {
       const softPx = psEdgeSoft(which);
       await ps.core.executeAsModal(async function () {
         await kbRemoveChannels(PS_TRIM_TMP);
         await saveSelectionToChannel(PS_TRIM_TMP);
-        if (had) await psUnsoftenInModal(ch);                                 // edit the hard version
+        if (had && mode !== "replace") await psUnsoftenInModal(ch);          // edit the hard version
         try {
-          if (mode === "add") {
+          if (mode === "replace") {                                           // the selection ∩ the garment IS the trim
+            await kbLoadChannel(PS_TRIM_TMP);
+            if (kbChannelExists(PS_GARMENT_CH)) await kbLoadChannel(PS_GARMENT_CH, "intersect");
+            if (!kbSelectionBounds()) throw new Error("the selection is outside the garment.");
+          } else if (mode === "add") {
             await kbLoadChannel(PS_TRIM_TMP);
             if (kbChannelExists(PS_GARMENT_CH)) await kbLoadChannel(PS_GARMENT_CH, "intersect");
             if (!kbSelectionBounds()) throw new Error("the selection is outside the garment.");
@@ -9779,19 +10103,22 @@
           await kbRemoveChannels(ch);
           if (kbSelectionBounds()) await saveSelectionToChannel(ch);
         } finally { await kbRemoveChannels(PS_TRIM_TMP); }
-        await psSoftenAfterSaveInModal(ch, softPx);                           // soften again
+        await psSoftenAfterSaveInModal(ch, softPx);                           // hard → raw, then soften again
         if (kbChannelExists(ch)) await kbLoadChannel(ch); else { try { await deselectAll(); } catch (_) {} }
       }, { commandName: "KBImage — edit " + which });
-      const rec = logRecordSkeleton("printswap:edit-" + which, { mode: mode, first: !had }, null, "selection");
+      const rec = logRecordSkeleton("printswap:edit-" + which, { mode: mode, first: !had, preview: previewing }, null, "selection");
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
       generateInFlight = false;
       const after = kbChannelExists(ch) ? await psTrimAfterEdit(which) : null;
-      setStatus(after && !after.ok ? "bad" : "ok", (mode === "add" ? "Added to" : "Removed from") + " the " + which + ". "
-        + (kbChannelExists(ch) ? "They are selected." : "None left.") + (after ? " " + after.msg : ""));
+      const done = mode === "add" ? "Added to the " + which + "." : (mode === "subtract" ? "Removed from the " + which + "." : "The selection is now the " + which + ".");
+      setStatus(after && !after.ok ? "bad" : "ok", done + " "
+        + (kbChannelExists(ch) ? "They are selected." : "None left.")
+        + (previewing && kbChannelExists(ch) ? " Accept builds the " + PS_TRIM_KINDS[which].group + " group with your edit." : "")
+        + (after ? " " + after.msg : ""));
     } catch (err) {
       traceErr("ps edit " + which, err);
-      setStatus("bad", "Could not " + (mode === "add" ? "add to" : "remove from") + " the " + which + ": " + ((err && err.message) || String(err)));
+      setStatus("bad", "Could not " + verb + " the " + which + ": " + ((err && err.message) || String(err)));
     } finally {
       generateInFlight = false;
       await traceFlush();
@@ -10188,6 +10515,11 @@
   async function psBuildTrimGroup(kind, why) {
     const K = PS_TRIM_KINDS[kind];
     traceStart("Print Swap — build " + K.group + " (" + why + ")");
+    // "accepted" = a fresh Find already replaced K.ch on purpose (the confirm for
+    // that lives in actPsFindPiping / actPsFindButtons, before K.ch is overwritten);
+    // every other reason (a touch-up, edge margin, shrink mask, Edges, a buttons
+    // change) rebuilds from K.ch as it stands now, so fold in any hand edit first.
+    if (why !== "accepted") { try { await psSyncHandEdits([K.ch]); } catch (e) { traceErr("ps hand-edit sync " + K.group, e); } }
     let msg = null, ok = false, recol = null;
     try {
       let bi = null;
@@ -10205,6 +10537,7 @@
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
       ok = true;
+      try { await psHandEditRemember([K.ch]); } catch (e) { traceErr("ps hand-edit remember " + K.group, e); }
       const found = why === "accepted";
       const back = function (group, hex) { return " " + group + " color " + hex + " put back. Click Original to remove it."; };
       let also = "";
@@ -10238,6 +10571,52 @@
     const pend = pendingRecall && pendingRecall.descriptor && String(pendingRecall.descriptor.op);
     if (pend === psTrimOp(kind)) return null;   // Accept builds it
     return psBuildTrimGroup(kind, "touch-up");
+  }
+  // Accept on a Find piping / Find buttons preview while a live selection differs from
+  // the trim channel: the user likely drew a fix and forgot + Add / Use selection. Warn
+  // first; a second click within 5 seconds accepts anyway. true = wait for that click.
+  let psTrimAcceptArmUntil = {};
+  async function psTrimAcceptGuard() {
+    const op = pendingRecall && pendingRecall.descriptor && String(pendingRecall.descriptor.op);
+    const kind = op === psTrimOp("piping") ? "piping" : (op === psTrimOp("buttons") ? "buttons" : null);
+    if (!kind) return false;
+    const ch = PS_TRIM_KINDS[kind].ch;
+    if (!kbChannelExists(ch) || !kbSelectionBounds()) return false;
+    if (Date.now() <= (psTrimAcceptArmUntil[kind] || 0)) { psTrimAcceptArmUntil[kind] = 0; return false; }
+    let differs = false;
+    try { differs = await psSelDiffersFromChannel(ch); }
+    catch (e) { traceErr("ps accept " + kind + ": compare the selection", e); return false; }
+    if (!differs) return false;
+    psTrimAcceptArmUntil[kind] = Date.now() + 5000;
+    setStatus("bad", "You have a selection that isn't saved to the " + kind + ". Use + Add or Use selection as " + kind + " first, or click Accept again to ignore it.");
+    return true;
+  }
+  // The live selection vs channel ch: bounds, then the 256 px wide fingerprint the
+  // garment note uses. The channel is loaded to read it, then the user's selection is put back.
+  async function psSelDiffersFromChannel(ch) {
+    const ps = psMod(), TMP = "KBPS_tmp_accept_sel", userSel = psUserSel;
+    const liveB = psBoundsKey(kbSelectionBounds());
+    const liveFp = await psSelFingerprint();
+    let chB = "", chFp = null, saved = false;
+    try {
+      await ps.core.executeAsModal(async function () {
+        await kbRemoveChannels(TMP);
+        await saveSelectionToChannel(TMP);
+        saved = true;
+        await kbLoadChannel(ch);
+        chB = psBoundsKey(kbSelectionBounds());
+      }, { commandName: "KBImage — compare the selection" });
+      if (chB === liveB) chFp = await psSelFingerprint();
+    } finally {
+      if (saved) {
+        await ps.core.executeAsModal(async function () {
+          try { await kbLoadChannel(TMP); } finally { await kbRemoveChannels(TMP); }
+        }, { commandName: "KBImage — put the selection back" });
+      }
+      psUserSel = userSel;
+    }
+    if (chB !== liveB) return true;
+    return psSelDiffers(liveFp, chFp) === true;
   }
 
   // Edge margin: PIPING's garment mask pulled in this many px (outline only).
@@ -10420,6 +10799,8 @@
     const names = psTrimGroups(kinds);
     generateInFlight = true;
     traceStart("Print Swap — recolor " + names);
+    if (opts.picked && kbPickerNote) trace(kbPickerNote);   // what the picker returned, kept in this run's trace
+    kbPickerNote = null;
     try {
       const per = await psTrimColorApply(kinds, hex);
       kinds.forEach(function (k) { psTrimColors[k] = hex; });
@@ -10601,18 +10982,15 @@
     const why = psTrimBlocked();
     if (why) { setStatus("bad", why); return; }                     // checked before the picker opens
     if (!psTrimBase(kind)) { setStatus("bad", "There is no " + K.group + " group yet. Find " + psTrimWord(kind) + " in step 4 and Accept, then pick its color."); psTrimColorSync(kind); return; }
-    const ps = psMod();
     const start = kbParseHex(psTrimColorShown(kind) || "#FFFFFF") || [255, 255, 255];
-    let res = null;
-    try {
-      await ps.core.executeAsModal(async function () {
-        res = await ps.action.batchPlay([{ _obj: "showColorPicker", context: "Print Swap " + K.group + " color",
-          color: { _obj: "RGBColor", red: start[0], grain: start[1], blue: start[2] }, _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: false });
-      }, { commandName: "KBImage — pick " + K.group + " color" });
-    } catch (e) { traceErr("ps trims: color picker", e); setStatus("bad", "The color picker did not open: " + ((e && e.message) || String(e))); psTrimColorSync(kind); return; }
-    const rgb = psPickerRgb(res && res[0]);
+    let rgb = null;
+    try { rgb = await psPickColor("Print Swap " + K.group + " color", start, "KBImage — pick " + K.group + " color"); }
+    catch (e) { traceErr("ps trims: color picker", e); setStatus("bad", "The color picker did not open: " + ((e && e.message) || String(e))); psTrimColorSync(kind); return; }
     if (!rgb) { setStatus("ok", K.group + ": nothing picked."); psTrimColorSync(kind); return; }
-    psTrimColorRun(kind, psHex(rgb));
+    const hex = psHex(rgb);
+    const box = $("ps-tc-hex-" + kind); if (box) { box.value = hex; box.classList.remove("ps-bad"); }   // shown at once; the run keeps it on success
+    const sw = $("ps-tc-sw-" + kind); if (sw) { sw.classList.remove("ps-swatch-none"); sw.style.backgroundColor = hex; }
+    await psTrimColorRun(kind, hex, { picked: true });
   }
 
   // ----- Order: trims above the GREY group; the veil (GREY copy 3) under the trims ----
@@ -10742,7 +11120,11 @@
       if (!P.layers[at] || P.layers[at].id !== F.id) { if (up) mv(F, up, EP.PLACEAFTER); else mv(F, P.layers[0], EP.PLACEBEFORE); }
     }
     const bk = psBackupGroup();
-    if (bk && P.layers[P.layers.length - 1].id !== bk.id) mv(bk, P.layers[P.layers.length - 1], EP.PLACEAFTER);   // Backup: always at the bottom
+    if (bk) {                                                // Backup: at the bottom, or above locked layers there (v0.20.7: they cannot be moved past)
+      const L = Array.from(P.layers), at = L.findIndex(function (l) { return l.id === bk.id; });
+      let free = null; for (let i = L.length - 1; i > at && !free; i--) if (!psLayerLocked(L[i])) free = L[i];
+      if (free) mv(bk, free, EP.PLACEAFTER);
+    }
     if (moved) trace("ps layout: " + moved + " move(s): " + PS_PS_GROUP + " › " + PS_PB_GROUP + ", " + PS_SDW_GROUP + ", parts, " + PS_BACKUP_GROUP);
     return moved;
   }
@@ -10802,10 +11184,16 @@
   //   its result becomes both raw and C (no extra feather on top).
   // =======================================================================
   function psRawName(ch) { return "KBPS raw " + String(ch).replace(/^KBPS /, ""); }
-  // One Edge softness slider per Adjust: person (1), garment (2), piping and other trims (4), buttons (4), parts (6).
+  // One Edge softness slider per step, always visible above that step's Adjust
+  // toggle (v0.20.4 — moved out of Adjust so edges can't be missed): person (1),
+  // garment (2), piping and other trims (4), buttons (4), parts (6).
   const PS_EDGE_IDS = ["ps-edge-soft-person", "ps-edge-soft-garment", "ps-edge-soft-trims", "ps-edge-soft-buttons", "ps-edge-soft-parts"];
+  // v0.20.4: raised defaults so edges blend smoothly out of the box, and the slider
+  // range doubled (0–10, was 0–5) so large upscaled files can blend further. Keyed by
+  // slider id, not kind, since several kinds (piping, other trims) share one slider.
+  const PS_EDGE_DEFAULTS = { "ps-edge-soft-person": 2, "ps-edge-soft-garment": 3, "ps-edge-soft-trims": 2, "ps-edge-soft-buttons": 1.5, "ps-edge-soft-parts": 3 };
   function psEdgeSoftId(kind) { if (kind === "person") return "ps-edge-soft-person"; if (kind === "buttons") return "ps-edge-soft-buttons"; return kind === "part" ? "ps-edge-soft-parts" : (PS_TRIM_KINDS[kind] ? "ps-edge-soft-trims" : "ps-edge-soft-garment"); }
-  function psEdgeSoft(kind) { return Math.round(kbNum(psEdgeSoftId(kind), 1, 0, 5) * 2) / 2; }
+  function psEdgeSoft(kind) { const id = psEdgeSoftId(kind); const d = PS_EDGE_DEFAULTS[id] != null ? PS_EDGE_DEFAULTS[id] : 1; return Math.round(kbNum(id, d, 0, 10) * 2) / 2; }
   function psEdgeSoftSync() {
     for (let i = 0; i < PS_EDGE_IDS.length; i++) {
       const sl = $(PS_EDGE_IDS[i]), lb = $(PS_EDGE_IDS[i] + "-val");
@@ -10930,6 +11318,8 @@
     const t = psEdgeTarget(srcEl);
     if (!t.ch) { setStatus("bad", "Click a part in the list in step 6 first."); return; }
     if (!kbChannelExists(t.ch) && !kbChannelExists(psRawName(t.ch))) { setStatus("bad", "There is no " + t.label + " mask yet (" + t.ch + ")."); return; }
+    // A re-feather reads raw and overwrites t.ch: fold in a hand-painted mask edit first.
+    try { await psSyncHandEdits([t.ch]); } catch (e) { traceErr("ps hand-edit sync (edge apply) " + t.ch, e); }
     const px = psEdgeSoft(t.kind);
     generateInFlight = true;
     traceStart("Print Swap — edge softness " + px + " px on " + t.ch);
@@ -10943,6 +11333,7 @@
       await logFinalizeCommitted(rec.id);
       generateInFlight = false;
       const more = await psAfterMaskChanged(t);
+      try { await psHandEditRemember([t.ch]); } catch (e) { traceErr("ps hand-edit remember (edge apply) " + t.ch, e); }
       let st = [];
       if (t.kind === "garment") { st = await psGarmentChanged(); await psGarmentSnapTake(); psStepsRefresh(); }
       setStatus("ok", "The " + t.label + " mask is softened " + px + " px (from its unsoftened copy, no SAM)." + more + psStaleMsg(st));
@@ -11363,6 +11754,9 @@
     }
     psStaleClear(step);                                    // made again on the current garment
     psStepsRefresh();
+    // v0.20.10: Print and Color stays open after Apply print is accepted: Trim colors, under
+    // it, are picked to match the print just placed. Step 8 is opened by its header.
+    if (step === 7) { psStepOpen(7); return; }
     psStepOpen(step < PS_STEP_COUNT ? step + 1 : null);
   }
 
@@ -12007,6 +12401,10 @@
     return out;
   }
 
+  // v0.20.3: OFF. Photoshop's Select Subject runs on the local GPU; on this machine it
+  // either took Windows down or popped "Couldn't find a subject" (a modal Photoshop
+  // shows even with dontDisplay). SAM 3.1 on Fal finds the person instead (+$0.005).
+  const PS_PERSON_SELECT_SUBJECT = false;
   async function executePsWhite(params) {
     const ps = psMod();
     const doc = ps.app.activeDocument;
@@ -12030,9 +12428,10 @@
       let hairPlane = null;
       try {
         // 1) Person: Photoshop's own Select Subject; SAM 3.1 "person" if that fails.
-        setStatus("busy", "Select Subject: finding the person…");
+        if (PS_PERSON_SELECT_SUBJECT) setStatus("busy", "Select Subject: finding the person…");
         let ssErr = null;
-        await ps.core.executeAsModal(async function () {
+        if (!PS_PERSON_SELECT_SUBJECT) ssErr = new Error("Select Subject is turned off in this version; SAM 3.1 finds the person");
+        else await ps.core.executeAsModal(async function () {
           try {
             try { await deselectAll(); } catch (_) {}
             await psSelectLayerVerifiedInModal(photoId, "the photo");
@@ -12136,10 +12535,16 @@
   // KBPS hair: refined by Select and Mask's own edge detection (smart radius) if
   // the plug-in can call it without the dialog; otherwise the edge softness.
   // Kept inside KBPS person. Returns how it was done (for the status line).
+  // v0.20.3: OFF. Calling Select and Mask (smart radius) headless froze and restarted
+  // an MSI laptop three times in a row on an 8 MP document (GPU / driver crash,
+  // not plug-in memory). The hair is softened with a plain feather instead. Set to
+  // true only on a machine where Select and Mask is known to be stable.
+  const PS_HAIR_SELECT_AND_MASK = false;
   async function psRefineHair() {
     const ps = psMod();
     let err = null;
-    try {
+    if (!PS_HAIR_SELECT_AND_MASK) err = new Error("Select and Mask is turned off in this version (it crashed this computer)");
+    else try {
       await ps.core.executeAsModal(async function () {
         await kbLoadChannel(PS_HAIR_CH);
         await ps.action.batchPlay([{ _obj: "smartBrushWorkspace",
@@ -12171,7 +12576,7 @@
   function psHairOn() { const c = $("ps-hair-on"); return !!(c && c.checked); }
   function psWhiteCostSync() {
     const el = $("ps-white-cost");
-    if (el) el.textContent = psHairOn() ? "Photoshop + SAM 3.1 · $" + SAM_COST_USD.toFixed(3) : "Photoshop · free";
+    if (el) { const n = (PS_PERSON_SELECT_SUBJECT ? 0 : 1) + (psHairOn() ? 1 : 0); el.textContent = n ? "Photoshop + SAM 3.1 · $" + (n * SAM_COST_USD).toFixed(3) : "Photoshop · free"; }
     const gc = $("ps-find-cost");
     if (gc) gc.textContent = psFindCostText();
   }
@@ -12232,6 +12637,16 @@
   const KB_STAMP_TMP = "KBPS_tmp_stamp";
   async function kbStampVisibleInModal() {
     const ps = psMod(), doc = ps.app.activeDocument, EP = ps.constants && ps.constants.ElementPlacement;
+    // v0.20.8: a temporary layer left anywhere by an interrupted run (a visible kb_ps_tmp
+    // turned Finish black) is deleted before the stamp; one deleted from PS can unclip a
+    // PRINT, so the clipping is repaired after.
+    const left = kbLayersWhere(function (l) { const n = String(l.name); return n === PS_TMP_LAYER || n === KB_BACKUP_TMP || n.indexOf("KBPS_tmp") === 0; });
+    if (left.length) {
+      const names = [];
+      for (let i = 0; i < left.length; i++) { const nm = psLayerDiag(left[i]); const f = await kbDeleteLayerSafeInModal(left[i].id); names.push(nm + (f ? " NOT removed: " + f.why : "")); }
+      trace("stamp: temporary layers deleted first: " + names.join("; "));
+      await psRepairClip("before the stamp", true);
+    }
     try { await deselectAll(); } catch (_) {}
     const top = doc.layers && doc.layers[0];
     if (top) await kbSelectLayerById(top.id);
@@ -12370,6 +12785,8 @@
         if (bk) { try { bk.visible = false; } catch (_) {} }
         const shown = psBackupPrints().filter(function (l) { try { return l.visible && (!bk || psParentId(l) !== bk.id); } catch (_) { return false; } });
         if (shown.length) throw new Error(shown.map(function (l) { return String(l.name); }).join(", ") + " is still visible outside " + PS_BACKUP_GROUP);
+        step = "repairing the clipping";
+        params.clipFixed = (await psRepairClip("Finish", true)).length;   // a PRINT not clipped to its shape would fill its rectangle in MERGED
         step = "stamping the visible result";
         try { await deselectAll(); } catch (_) {}
         if (bg) { try { bg.visible = false; } catch (_) {} }          // original background in the final
@@ -12407,6 +12824,9 @@
     const ps = psMod();
     if (!ps.app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
     if (psOtherPending("printswap:finish")) { setStatus("bad", "Accept or Re-run the preview that is waiting first."); return; }
+    // Last chance before the flatten: fold any hand-painted mask (on HAIR from the last
+    // Finish included — it is about to be deleted below) back into its raw channel.
+    try { await psSyncHandEdits(psAllHandEditChannels()); } catch (e) { traceErr("ps hand-edit sync (finish)", e); }
     // Finish replaces the earlier MERGED and HAIR (they would be stamped into the new one otherwise).
     const old = [psTopLayerNamed(PS_MERGED_NAME), psTopLayerNamed(PS_MERGED_GROUP), psTopLayerNamed(PS_HAIR_NAME)].filter(function (l) { return l && !psIsPending(l.id); });
     if (old.length) { try { await deleteLayersById(old.map(function (l) { return l.id; })); } catch (_) {} }
@@ -12417,10 +12837,287 @@
     try {
       await psRecall(9, "ps-recall-anchor-9", { op: "printswap:finish", params: p, targetLayerId: null, sourceRef: "visible",
         paramsProvider: params, execute: executePsFinish });
+      if (p.hair) { try { await psHandEditRemember([PS_HAIR_CH]); } catch (e) { traceErr("ps hand-edit remember (finish)", e); } }
       setStatus("ok", "MERGED" + (p.hair ? " and HAIR" : "") + " on top" + (p.bgHidden ? ", original background back (BG LIGHTEN off)" : "") + ".");
     } catch (err) {
       traceErr("ps finish", err && err.cause ? err.cause : err);
       setStatus("bad", (err && err.message) || "Finish failed.");
+    } finally {
+      generateInFlight = false;
+      await traceFlush();
+    }
+  }
+
+  // =======================================================================
+  // PRINT SWAP — hand-edit sync (v0.20.5). Every layer mask below is DERIVED
+  // from a "KBPS …" channel (+ its hard "KBPS raw …" copy): MODEL / BG LIGHTEN
+  // from KBPS person, HAIR from KBPS hair, GREY exact from KBPS garment, a
+  // part's "<name> shape" layer from KBPS part <name>, and PIPING / BUTTON's
+  // inner layer from KBPS piping / KBPS buttons. A rebuild (edge Apply, a
+  // touch-up, the parts/trim/print rebuild, Finish) normally reads straight
+  // from the channel and overwrites that layer's mask — so a hand-painted fix
+  // made directly on the layer's mask in Photoshop, since the plugin last
+  // wrote it, would be silently thrown away.
+  //
+  // psSyncHandEdits(chs) runs first: it fingerprints each mapped layer's
+  // CURRENT mask (a sha256 of a downsampled, ≤256 px long edge, strip-safe
+  // read — never full resolution) and compares it to the fingerprint saved
+  // the last time the plugin wrote that layer (kept in psStateSave's
+  // "maskFp"). On a difference, it copies the live mask back into the RAW
+  // channel (intersected with KBPS garment for a part or a trim; inverted
+  // back to person for BG LIGHTEN), re-softens with psSoftenFromRawInModal,
+  // traces it and logs "printswap:hand-edit-sync" — so the rebuild that
+  // follows starts from the hand-painted shape, just re-feathered.
+  //
+  // A fresh Find/Accept of the same step means to replace the mask on
+  // purpose; silently folding the old hand edit back in there would corrupt
+  // the fresh result. So those call sites pass `opts.confirmLabel` instead:
+  // on a detected hand edit it asks first (a status line + a second click
+  // within 5 seconds), the way Build shading already does, and otherwise
+  // leaves the mask alone.
+  //
+  // v0.20.8: OFF (PS_HAND_EDIT_SYNC). Its reads duplicated each mapped layer next to it, and
+  // for a part's "<name> shape" layer (the clipping base of its PRINT) adding and deleting
+  // that copy unclipped every PRINT; a copy that stayed was stamped into MERGED (black
+  // Finish). Off, psSyncHandEdits returns { changed: [] } and psHandEditRemember does
+  // nothing, so every caller runs as in 0.20.4, and "Save my mask edits" is hidden. The
+  // reads below no longer duplicate anything (getLayerMask / the layer's own pixels by id);
+  // turn this on only after that version is tested.
+  // =======================================================================
+  const PS_HAND_EDIT_SYNC = false;
+  const PS_HANDEDIT_FP_EDGE = 256;                    // the fingerprint read's long-edge cap
+  let psHandEditArmUntil = {};                        // two clicks per armKey, like psPartsArmUntil etc.
+
+  // Channel → the live layer(s) whose mask it drives right now (empty if that
+  // layer does not exist yet). invert: the layer's mask is the INVERSE of the
+  // channel (BG LIGHTEN). intersectGarment: copying the layer's mask back
+  // into the channel is cut to KBPS garment first (parts, trims).
+  function psHandEditTargets(ch) {
+    const out = [];
+    if (ch === PS_PERSON_CH) {
+      const model = psTopLayerNamed(PS_MODEL_NAME); if (model) out.push({ ch: ch, layer: model, invert: false, intersectGarment: false });
+      const bg = psBgLayer(); if (bg) out.push({ ch: ch, layer: bg, invert: true, intersectGarment: false });
+    } else if (ch === PS_HAIR_CH) {
+      const hair = psTopLayerNamed(PS_HAIR_NAME); if (hair) out.push({ ch: ch, layer: hair, invert: false, intersectGarment: false });
+    } else if (ch === PS_GARMENT_CH) {
+      const grey = psGreyExactLayer(); if (grey) out.push({ ch: ch, layer: grey, invert: false, intersectGarment: false });
+    } else if (String(ch).indexOf(PS_PART_CH) === 0) {
+      const name = String(ch).slice(PS_PART_CH.length);
+      const sh = psShapeLayer(name); if (sh) out.push({ ch: ch, layer: sh, invert: false, intersectGarment: true });
+    } else if (ch === PS_PIPING_CH || ch === PS_BUTTONS_CH) {
+      const kind = ch === PS_PIPING_CH ? "piping" : "buttons", K = PS_TRIM_KINDS[kind];
+      const grp = psTrimGroupNamed(K.group), px = grp ? psChildNamed(grp, K.group) : null;
+      if (px) out.push({ ch: ch, layer: px, invert: false, intersectGarment: true });
+    }
+    return out;
+  }
+  function psHandEditFpKey(t) { return t.ch + "|" + t.layer.name; }
+  function psHandEditLabel(t) {
+    if (t.ch === PS_PERSON_CH) return "person";
+    if (t.ch === PS_HAIR_CH) return "hair";
+    if (t.ch === PS_GARMENT_CH) return "garment";
+    if (t.ch === PS_PIPING_CH) return "piping";
+    if (t.ch === PS_BUTTONS_CH) return "buttons";
+    if (String(t.ch).indexOf(PS_PART_CH) === 0) return String(t.ch).slice(PS_PART_CH.length);
+    return t.ch;
+  }
+  // Which Edges slider a channel's feather comes from (hair shares person's).
+  function psEdgeKindOfChannel(ch) {
+    if (ch === PS_PERSON_CH || ch === PS_HAIR_CH) return "person";
+    if (ch === PS_GARMENT_CH) return "garment";
+    if (String(ch).indexOf(PS_PART_CH) === 0) return "part";
+    if (ch === PS_PIPING_CH) return "piping";
+    if (ch === PS_BUTTONS_CH) return "buttons";
+    return "garment";
+  }
+
+  // Inside executeAsModal: layer `id`'s CURRENT mask over rect, as { alpha } (rect size, or
+  // outSize { W, H }). v0.20.8: no layer is ever added or removed (a duplicate next to a
+  // clipping base unclipped the PRINT layers):
+  //   - a layer with a user mask: ps.imaging.getLayerMask (Photoshop 24.2+) by layerID, with
+  //     targetSize for the downsampled fingerprint. Not available, or it fails: null (the
+  //     target is skipped, never read another way);
+  //   - a layer without one (a part's "<name> shape", its shape baked into its pixels): the
+  //     layer's own alpha, read by layerID with getLayerPixels8 (kbReadGarmentLuma, strips).
+  //   - Photoshop will not say whether it has a mask: null.
+  async function psReadLayerMaskInModal(id, rect, outSize) {
+    if (!kbLayerById(id)) return null;
+    const has = await psLayerHasMask(id);
+    if (has === false) {
+      const g = await kbReadGarmentLuma(id, rect, outSize);
+      return g ? { alpha: g.alpha } : null;
+    }
+    if (has !== true) return null;
+    return psReadUserMask(id, rect, outSize);
+  }
+  // Layer `id`'s user mask over rect → { alpha } (W × H), nearest sample of what Photoshop
+  // returns, whatever bounds and size it returns. Outside the returned bounds reads 0.
+  let psLayerMaskApi = null;                          // null untried · "ok" · "no"
+  async function psReadUserMask(id, rect, outSize) {
+    const ps = psMod(), doc = ps.app.activeDocument;
+    if (psLayerMaskApi === "no" || !ps.imaging || typeof ps.imaging.getLayerMask !== "function") { psLayerMaskApi = "no"; return null; }
+    const rw = rect.right - rect.left, rh = rect.bottom - rect.top;
+    const W = outSize && outSize.W > 0 ? outSize.W : rw, H = outSize && outSize.H > 0 ? outSize.H : rh;
+    const alpha = new Uint8Array(W * H);
+    const put = async function (r, rows) {          // rows: [y0, y1) of the output this result covers
+      const img = r && r.imageData;
+      if (!img) throw new Error("getLayerMask returned no imageData.");
+      try {
+        const d = await img.getData({ chunky: true });
+        const iw = img.width, ih = img.height, c = img.components || Math.max(1, Math.round(d.length / (iw * ih)));
+        const cs = img.componentSize || 8;
+        const got = r.sourceBounds || rect;
+        const gl = Number(got.left), gt = Number(got.top), gw = Number(got.right) - gl, gh = Number(got.bottom) - gt;
+        if (!(gw > 0 && gh > 0)) return;
+        const sx = iw / gw, sy = ih / gh;
+        for (let y = rows[0]; y < rows[1]; y++) {
+          const docY = rect.top + (y + 0.5) * rh / H, iy = Math.floor((docY - gt) * sy);
+          if (iy < 0 || iy >= ih) continue;
+          for (let x = 0; x < W; x++) {
+            const docX = rect.left + (x + 0.5) * rw / W, ix = Math.floor((docX - gl) * sx);
+            if (ix < 0 || ix >= iw) continue;
+            let v = d[(iy * iw + ix) * c];
+            if (cs === 16) v = Math.round(v * 255 / 32768); else if (cs === 32) v = Math.round(v * 255);
+            alpha[y * W + x] = v > 255 ? 255 : (v < 0 ? 0 : v);
+          }
+        }
+      } finally { try { img.dispose(); } catch (_) {} }
+    };
+    const base = { documentID: doc.id, layerID: id, kind: "user" };
+    try {
+      if (W !== rw || H !== rh) {                     // the fingerprint: Photoshop downsamples
+        await put(await ps.imaging.getLayerMask(Object.assign({}, base, { sourceBounds: rect, targetSize: { width: W, height: H } })), [0, H]);
+      } else {                                        // full resolution, in strips
+        const strip = Math.max(1, Math.floor(KB_STRIP_PX / Math.max(1, rw)));
+        for (let st = 0; st < rh; st += strip) {
+          const sb = Math.min(rh, st + strip);
+          await put(await ps.imaging.getLayerMask(Object.assign({}, base, { sourceBounds: { left: rect.left, top: rect.top + st, right: rect.right, bottom: rect.top + sb } })), [st, sb]);
+        }
+      }
+    } catch (e) {
+      if (psLayerMaskApi !== "ok") psLayerMaskApi = "no";
+      traceErr("ps hand-edit: getLayerMask on layer " + id, e);
+      return null;
+    }
+    psLayerMaskApi = "ok";
+    return { alpha: alpha };
+  }
+  // Inside executeAsModal: a short fingerprint of layer `id`'s mask right
+  // now — sha256 of a ≤256 px-long-edge downsample, never full resolution.
+  async function psMaskFingerprintInModal(id) {
+    const doc = psMod().app.activeDocument;
+    const docW = Math.round(doc.width), docH = Math.round(doc.height);
+    const k = Math.min(1, PS_HANDEDIT_FP_EDGE / Math.max(docW, docH));
+    const W = Math.max(1, Math.round(docW * k)), H = Math.max(1, Math.round(docH * k));
+    const g = await psReadLayerMaskInModal(id, { left: 0, top: 0, right: docW, bottom: docH }, { W: W, H: H });
+    return g ? (sha256Hex(g.alpha) + ":" + W + "x" + H) : null;
+  }
+  // Outside a modal: fold target `t`'s LIVE mask (full resolution) back into
+  // its raw channel, then re-derive the soft channel from that raw at the
+  // current Edges value — the hand-painted shape, just re-feathered.
+  async function psSyncOneTarget(t) {
+    const ps = psMod(), doc = ps.app.activeDocument;
+    const docW = Math.round(doc.width), docH = Math.round(doc.height);
+    const rect = { left: 0, top: 0, right: docW, bottom: docH };
+    let g = null;
+    await ps.core.executeAsModal(async function () { g = await psReadLayerMaskInModal(t.layer.id, rect); }, { commandName: "KBImage — read hand-edited mask" });
+    if (!g) return;
+    let plane = g.alpha;
+    if (t.invert) { const inv = new Uint8Array(plane.length); for (let i = 0; i < plane.length; i++) inv[i] = 255 - plane[i]; plane = inv; }
+    const raw = psRawName(t.ch);
+    if (t.intersectGarment) await psPlaneRectToChannel(plane, docW, docH, rect, raw);
+    else await psPlaneToChannel(plane, docW, docH, docW, docH, raw);
+    await ps.core.executeAsModal(async function () { await psSoftenFromRawInModal(t.ch, psEdgeSoft(psEdgeKindOfChannel(t.ch))); }, { commandName: "KBImage — re-soften hand edit" });
+  }
+  // Before ANY rebuild that reads one of `chs`: has the layer it drives been
+  // hand-painted since the plugin last wrote it? Silently folds it back into
+  // the raw channel and logs it — UNLESS opts.confirmLabel is set (a fresh
+  // Find/Accept means to replace the mask on purpose), in which case it asks
+  // first and leaves the mask alone either way. A layer never seen before
+  // (first build) just seeds its fingerprint; nothing is flagged.
+  async function psSyncHandEdits(chs, opts) {
+    if (!PS_HAND_EDIT_SYNC) return { changed: [] };          // off (v0.20.8): every caller as in 0.20.4
+    opts = opts || {};
+    const targets = [];
+    for (let i = 0; i < chs.length; i++) targets.push.apply(targets, psHandEditTargets(chs[i]));
+    if (!targets.length) return { changed: [] };
+    const st = await psStateLoad();
+    const fp = Object.assign({}, st.maskFp || {});
+    const withNow = [];
+    await psMod().core.executeAsModal(async function () {
+      for (let i = 0; i < targets.length; i++) {
+        try { withNow.push({ t: targets[i], now: await psMaskFingerprintInModal(targets[i].layer.id) }); }
+        catch (e) { traceErr("ps hand-edit: fingerprint " + targets[i].ch, e); }
+      }
+    }, { commandName: "KBImage — check hand edits" });
+    const changed = [], fresh = [];
+    for (let i = 0; i < withNow.length; i++) {
+      const x = withNow[i]; if (x.now == null) continue;
+      const key = psHandEditFpKey(x.t);
+      if (fp[key] == null) fresh.push(x); else if (fp[key] !== x.now) changed.push(x);
+    }
+    if (fresh.length) { fresh.forEach(function (x) { fp[psHandEditFpKey(x.t)] = x.now; }); st.maskFp = fp; await psStateSave(st); }
+    if (!changed.length) return { changed: [] };
+    if (opts.confirmLabel) {
+      const key = opts.armKey || "default";
+      if (Date.now() > (psHandEditArmUntil[key] || 0)) {
+        psHandEditArmUntil[key] = Date.now() + 5000;
+        const names = changed.map(function (x) { return psHandEditLabel(x.t); }).join(", ");
+        setStatus("bad", opts.confirmLabel + " It has hand edits on " + names + ". Click " + (opts.confirmActionLabel || "it") + " again within 5 seconds to go ahead.");
+        return { changed: changed.map(function (x) { return x.t; }), needsConfirm: true };
+      }
+      psHandEditArmUntil[key] = 0;
+      return { changed: changed.map(function (x) { return x.t; }), confirmed: true };
+    }
+    for (let i = 0; i < changed.length; i++) {
+      const t = changed[i].t;
+      await psSyncOneTarget(t);
+      fp[psHandEditFpKey(t)] = changed[i].now;
+      trace("ps hand-edit: " + t.ch + " synced from " + psHandEditLabel(t) + "'s hand-painted mask");
+      const rec = logRecordSkeleton("printswap:hand-edit-sync", { channel: t.ch, layer: t.layer.name }, t.layer.id, "mask");
+      await logRun(rec); await logFinalizeCommitted(rec.id);
+    }
+    st.maskFp = fp; await psStateSave(st);
+    return { changed: changed.map(function (x) { return x.t; }), synced: true };
+  }
+  // After a rebuild writes a fresh mask for `chs`' layers: re-seed the
+  // fingerprint, so the next check compares against what the plugin just
+  // wrote (not what it wrote before this rebuild).
+  async function psHandEditRemember(chs) {
+    if (!PS_HAND_EDIT_SYNC) return;                           // off (v0.20.8)
+    const targets = [];
+    for (let i = 0; i < chs.length; i++) targets.push.apply(targets, psHandEditTargets(chs[i]));
+    if (!targets.length) return;
+    const st = await psStateLoad();
+    const fp = Object.assign({}, st.maskFp || {});
+    await psMod().core.executeAsModal(async function () {
+      for (let i = 0; i < targets.length; i++) {
+        try { fp[psHandEditFpKey(targets[i])] = await psMaskFingerprintInModal(targets[i].layer.id); } catch (_) {}
+      }
+    }, { commandName: "KBImage — remember mask" });
+    st.maskFp = fp; await psStateSave(st);
+  }
+  // Every channel the plugin currently tracks a mapped mask for, in this document.
+  function psAllHandEditChannels() {
+    const chs = [PS_PERSON_CH, PS_HAIR_CH, PS_GARMENT_CH, PS_PIPING_CH, PS_BUTTONS_CH];
+    psPartNames().forEach(function (n) { chs.push(PS_PART_CH + n); });
+    return chs;
+  }
+  // The visible "Save my mask edits" button: syncs every channel on demand, no
+  // confirm (an explicit ask from the retoucher is never "on purpose replace").
+  async function actPsSaveHandEdits() {
+    if (!PS_HAND_EDIT_SYNC) return;                           // off (v0.20.8): the button is hidden
+    if (generateInFlight) { kbBusyNote(); return; }
+    if (!psMod().app.activeDocument) { setStatus("bad", "Open a Photoshop document first."); return; }
+    generateInFlight = true;
+    traceStart("Print Swap — Save my mask edits");
+    try {
+      const r = await psSyncHandEdits(psAllHandEditChannels());
+      setStatus("ok", r.changed.length ? "Saved hand edits: " + r.changed.map(psHandEditLabel).join(", ") + "."
+        : "No hand edits found — every mask already matches what Print Swap last built.");
+    } catch (err) {
+      traceErr("ps save hand edits", err);
+      setStatus("bad", "Could not save hand edits: " + ((err && err.message) || String(err)));
     } finally {
       generateInFlight = false;
       await traceFlush();
@@ -12780,6 +13477,7 @@
     "ps-finish":             actPsFinish,        // 9 Finish
     "ps-edge-apply":         actPsEdgeApply,     // edge softness (steps 1, 2, 4, 6)
     "ps-edge-refine":        actPsEdgeRefine,
+    "ps-save-hand-edits":    actPsSaveHandEdits, // hand-edit sync, any step
   };
   dispatchAction = function (name, srcEl) {
     const fn = ACTIONS[name];
@@ -12810,6 +13508,7 @@
   // =======================================================================
 
   async function hydrate() {
+    try { const r = $("ps-save-hand-edits-row"); if (r) r.classList.toggle("hidden", !PS_HAND_EDIT_SYNC); } catch (_) {}   // "Save my mask edits" only while the sync is on
     try { cachedFalKey = await loadFalKey(); } catch (_) { cachedFalKey = ""; }
     await adminLoad();
     if (cachedFalKey) {
