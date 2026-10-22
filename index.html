@@ -580,6 +580,7 @@ code {
   font-weight: 600;
   color: var(--text);
 }
+.cost-total.ps-price { color: #39FF14; font-weight: bold; }   /* same neon green as the step costs (.ps-price) */
 .cost-total.over { color: var(--alert); }   /* crossed the spend threshold */
 .cost-reset {
   font-size: 11px;
@@ -691,7 +692,7 @@ code {
     <div id="cost-bar" class="cost-bar">
       <span id="session-reset" class="cost-reset" role="button" tabindex="0" data-action="reset-session" title="Reset session total">Reset</span>
       <span id="session-since" class="cost-since">since —</span>
-      <span id="session-total" class="cost-total">$0.00</span>
+      <span id="session-total" class="cost-total ps-price">$0.00</span>
     </div>
 
     <!-- =============== DOCUMENT INFO BAR =============== -->
@@ -1016,6 +1017,7 @@ code {
             <div class="btn-row">
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-part" data-mode="add">+ Add</div>
               <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-part" data-mode="subtract">- Remove</div>
+              <div class="btn-secondary btn-small" role="button" tabindex="0" data-action="ps-edit-part" data-mode="replace">Use selection as part</div>
             </div>
             <div class="btn-row">
               <span id="ps-shapes-link" class="text-link" role="button" tabindex="0" data-action="ps-toggle-shapes">Show shapes</span>

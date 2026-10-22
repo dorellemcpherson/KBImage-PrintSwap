@@ -98,12 +98,14 @@
         if (group && group.classList.contains("ps-disabled")) return;   // grayed out (BUTTON while it follows PIPING)
         if (group) {
           try { console.log(TAG, "click: pill →", group.id, pill.getAttribute("data-value")); } catch (_) {}
-          // Single-select within one group.
+          // Single-select within one group. Step 6's parts list: clicking the highlighted
+          // part again clears it (no part active).
+          const unpick = group.id === "pills-ps-parts" && pill.classList.contains("selected");
           const pills = group.querySelectorAll(".pill");
           for (let i = 0; i < pills.length; i++) pills[i].classList.remove("selected");
-          pill.classList.add("selected");
+          if (!unpick) pill.classList.add("selected");
 
-          const value = pill.getAttribute("data-value");
+          const value = unpick ? null : pill.getAttribute("data-value");
           if (group.id === "pills-ps-piping-mode") {
             if (typeof psTrimsOnModeChanged === "function") psTrimsOnModeChanged();   // piping tolerance per mode
           } else if (group.id === "pills-ps-gray-chip") {
@@ -4120,15 +4122,25 @@
   async function actPsGrayCustom() {
     if (generateInFlight) { psGrayFaceSync(); return; }
     const t = psTargetHex() || { rgb: kbParseHex(PS_GRAY_DEFAULT) };
+    const box = $("ps-target-gray"), prev = box ? box.value : null;
     let rgb = null;
     try { rgb = await psPickColor("Print Swap target gray", t.rgb, "KBImage — pick gray"); }
     catch (e) { traceErr("ps gray: color picker", e); setStatus("bad", "The color picker did not open: " + ((e && e.message) || String(e))); psGrayFaceSync(); return; }
     if (!rgb) { setStatus("ok", "Custom gray: nothing picked."); psGrayFaceSync(); return; }
-    await psGraySet(rgb, "picker");
+    try { await psGraySet(rgb, "picker"); }
+    catch (e) {
+      traceErr("ps gray: set picked " + psHex(rgb), e);
+      if (box && prev != null) box.value = prev;
+      psGrayFaceSync();
+      setStatus("bad", "Could not use the picked gray " + psHex(rgb) + ": " + ((e && e.message) || String(e)));
+    }
   }
   // Photoshop's color picker (shown, synchronous: v0.20.7 — with dontDisplay + async the
-  // pick was lost), starting at `start`. The raw result goes in the trace. Nothing in the
-  // result: the foreground color, if the picker changed it. Returns [r, g, b] or null.
+  // pick was lost), starting at `start`. v0.20.11: the pick is read from BOTH places it can
+  // land — the batchPlay result and app.foregroundColor (read before and after; changed =
+  // the user picked) — and the raw result plus which one was used go in the trace.
+  // Order: a result color other than the start; else a changed foreground; else the
+  // result as returned (the start color: OK without a change). Returns [r, g, b] or null.
   async function psPickColor(context, start, commandName) {
     const ps = psMod();
     const fg = psForegroundRgb();
@@ -4137,14 +4149,17 @@
       res = await ps.action.batchPlay([{ _obj: "showColorPicker", context: context,
         color: { _obj: "RGBColor", red: start[0], grain: start[1], blue: start[2] }, _options: { dialogOptions: "display" } }], { synchronousExecution: true });
     }, { commandName: commandName });
+    const now = psForegroundRgb();
     let raw = ""; try { raw = JSON.stringify(res); } catch (_) { raw = String(res); }
-    let rgb = psPickerRgb(Array.isArray(res) ? res[0] : res);
-    let note = "color picker (" + context + ") result: " + raw + " → " + (rgb ? psHex(rgb) : "nothing");
-    // Nothing read, or only the start color back: the foreground color, if the picker changed it.
-    if (!rgb || rgb.join() === start.join()) {
-      const now = psForegroundRgb();
-      if (now && (!fg || now.join() !== fg.join())) { rgb = now; note += "; the foreground color " + psHex(now) + " used"; }
-    }
+    const got = psPickerRgb(Array.isArray(res) ? res[0] : res);
+    const fgChanged = !!now && (!fg || now.join() !== fg.join());
+    let rgb = null, used = "nothing";
+    if (got && got.join() !== start.join()) { rgb = got; used = "the batchPlay result"; }
+    else if (fgChanged) { rgb = now; used = "fallback: the foreground color (changed " + (fg ? psHex(fg) : "?") + " → " + psHex(now) + ")"; }
+    else if (got) { rgb = got; used = "the batchPlay result (the start color, unchanged)"; }
+    const note = "color picker (" + context + ") start " + psHex(start) + ", raw result: " + raw
+      + ", result read " + (got ? psHex(got) : "nothing") + ", foreground " + (fg ? psHex(fg) : "?") + " → " + (now ? psHex(now) : "?")
+      + " ⇒ " + (rgb ? psHex(rgb) : "nothing") + " (" + used + ")";
     trace(note);
     kbPickerNote = note;                                // a run that starts its own trace right after puts it back (traceStart clears)
     return rgb;
@@ -6657,21 +6672,32 @@
     } catch (e) { try { console.warn(TAG, "[ps] layer select listener not registered:", e); } catch (_) {} }
   }
 
-  // Row clicked: that part's pixels become the selection; its group is selected (and
-  // opened) in the Layers panel.
+  // Row clicked: that part's hard (raw) mask becomes the live selection, so Quick
+  // Selection / Lasso in Add or Subtract mode grow or trim the part's own shape; its
+  // group is selected (and opened) in the Layers panel. Nothing is written here: only
+  // + Add, - Remove and Use selection as part change the part. null = no part picked.
+  let psPartSelLoaded = null;                         // { name, bounds }: the part shape last loaded as the selection
   async function psOnPartPicked(name) {
-    if (!name) return;
+    psPartSelLoaded = null;
+    if (!name) { setStatus("ok", "No part picked. Click a part in the list first to edit it."); return; }
     const ps = psMod();
     if (!ps.app.activeDocument) return;
-    const ch = PS_PART_CH + name;
-    const has = kbChannelExists(ch);
+    const ch = PS_PART_CH + name, raw = psRawName(ch);
+    const src = kbChannelExists(raw) ? raw : (kbChannelExists(ch) ? ch : null);
+    let loaded = false;
     try {
       await ps.core.executeAsModal(async function () {
-        if (has) await kbLoadChannel(ch); else { try { await deselectAll(); } catch (_) {} }
+        if (src) {
+          try { await kbLoadChannel(src); loaded = !!kbSelectionBounds(); }
+          catch (e) { traceErr("ps part pick: load " + src, e); }
+        } else { try { await deselectAll(); } catch (_) {} }
         await psSelectPartInLayersInModal(name);
       }, { commandName: "KBImage — show part" });
-      setStatus("ok", has ? name + " is selected. Draw a selection, then + Add or - Remove."
-                          : name + " has no pixels yet. Select it by hand, then + Add.");
+      if (loaded) psPartSelLoaded = { name: name, bounds: psBoundsCopy(kbSelectionBounds()) };
+      trace("ps part pick: " + name + (src ? (loaded ? ", " + src + " loaded as the selection" : ", loading " + src + " failed") : ", no mask yet"));
+      if (!src) setStatus("ok", name + " has no pixels yet. Select it by hand, then + Add or Use selection as part.");
+      else if (!loaded) setStatus("bad", "Could not load " + name + "'s mask (" + src + ") as the selection. Draw a selection, then + Add or - Remove.");
+      else setStatus("ok", name + "'s shape is the selection. Grow or trim it (Quick Selection / Lasso, Add or Subtract), then + Add, - Remove or Use selection as part.");
     } catch (err) {
       setStatus("bad", "Could not show " + name + ": " + ((err && err.message) || String(err)));
     }
@@ -7141,7 +7167,18 @@
     }
   }
 
-  // ----- TOUCH UP — + / − the current selection to / from the picked part ----------
+  // ----- TOUCH UP — + / − / = the current selection to / from / as the picked part ----
+  // Pure: how much two bounds overlap (intersection over union, 0–1).
+  function psBoundsIou(a, b) {
+    if (!a || !b) return 0;
+    const n = function (v) { return Number(v && v._value != null ? v._value : v) || 0; };
+    const ix = Math.max(0, Math.min(n(a.right), n(b.right)) - Math.max(n(a.left), n(b.left)));
+    const iy = Math.max(0, Math.min(n(a.bottom), n(b.bottom)) - Math.max(n(a.top), n(b.top)));
+    const area = function (r) { return Math.max(0, n(r.right) - n(r.left)) * Math.max(0, n(r.bottom) - n(r.top)); };
+    const u = area(a) + area(b) - ix * iy;
+    return u > 0 ? (ix * iy) / u : 0;
+  }
+  function psBoundsCopy(b) { return b ? { left: Number(b.left), top: Number(b.top), right: Number(b.right), bottom: Number(b.bottom) } : null; }
   async function actPsEditPart(srcEl) {
     if (generateInFlight) { kbBusyNote(); return; }
     const ps = psMod();
@@ -7149,13 +7186,22 @@
     if (!psPartsGroup()) { setStatus("bad", "Click Find parts first."); return; }
     const name = readPills("pills-ps-parts", null);
     if (!name) { setStatus("bad", "Click a part in the list first."); return; }
-    const mode = (srcEl && srcEl.getAttribute && srcEl.getAttribute("data-mode")) === "subtract" ? "subtract" : "add";
-    if (!kbSelectionBounds()) {
-      setStatus("bad", "Select the bit to " + (mode === "add" ? "add to " : "remove from ") + name + " first (Lasso or any selection tool).");
+    const dm = srcEl && srcEl.getAttribute && srcEl.getAttribute("data-mode");
+    const mode = dm === "subtract" ? "subtract" : (dm === "replace" ? "replace" : "add");
+    const verb = mode === "add" ? "add to " : (mode === "subtract" ? "remove from " : "use the selection as ");
+    const selB = psBoundsCopy(kbSelectionBounds());
+    if (!selB) {
+      setStatus("bad", mode === "replace" ? "There is no selection. Select " + name + "'s shape first, then Use selection as part."
+        : "Select the bit to " + verb + name + " first (Lasso or any selection tool).");
       return;
     }
     const ch = PS_PART_CH + name;
-    const home = psPartHome(name);
+    let home = psPartHome(name);
+    if (home === name) home = PS_UNASSIGNED;                   // a rest part's dropped pixels: nowhere else to go
+    // - Remove on the part's own shape (loaded by clicking the part, then trimmed with
+    // Lasso / Quick Selection in Subtract mode): what the trim took away is removed. A
+    // fresh selection (bounds unlike the part's) is the bit to remove, as before.
+    const trimmed = mode === "subtract" && !!psPartSelLoaded && psPartSelLoaded.name === name && psBoundsIou(selB, psPartSelLoaded.bounds) >= 0.5;
     if (mode === "subtract") {
       if (psPartIsRest(name)) {
         setStatus("bad", name + " takes whatever is left. To move pixels out of it, pick the part they belong to and use + Add.");
@@ -7168,7 +7214,7 @@
     try { await psSyncHandEdits(psPartNames().map(function (n) { return PS_PART_CH + n; })); }
     catch (e) { traceErr("ps hand-edit sync (edit part)", e); }
     generateInFlight = true;
-    traceStart("Print Swap — " + (mode === "add" ? "add to " : "remove from ") + name);
+    traceStart("Print Swap — " + verb + name + (trimmed ? " (trimmed shape)" : ""));
     const changed = [name];
     const softPx = psEdgeSoft("part");
     try {
@@ -7202,11 +7248,53 @@
               await save(oc);
               changed.push(others[i]);
             }
+          } else if (mode === "replace") {
+            // The selection (garment pixels only) IS the part now.
+            await kbLoadChannel(PS_PART_TMP);
+            await kbLoadChannel(PS_GARMENT_CH, "intersect");
+            if (!kbSelectionBounds()) throw new Error("the selection is outside the garment.");
+            await save(PS_PART_TMP);
+            // What the part had and no longer has → the region's rest part, else UNASSIGNED (as - Remove).
+            let dropped = false;
+            if (kbChannelExists(ch)) {
+              await kbLoadChannel(ch);
+              await kbLoadChannel(PS_PART_TMP, "subtract");
+              if (kbSelectionBounds()) { await saveSelectionToChannel(PS_PART_TMP2); dropped = true; }
+            }
+            await kbLoadChannel(PS_PART_TMP);
+            await save(ch);
+            // The new shape leaves every other part (rule 1).
+            const others = psPartNames().filter(function (n) { return n !== name; });
+            for (let i = 0; i < others.length; i++) {
+              const oc = PS_PART_CH + others[i];
+              if (!kbChannelExists(oc)) continue;
+              await kbLoadChannel(oc);
+              await kbLoadChannel(PS_PART_TMP, "intersect");
+              if (!kbSelectionBounds()) continue;
+              await kbLoadChannel(oc);
+              await kbLoadChannel(PS_PART_TMP, "subtract");
+              await save(oc);
+              changed.push(others[i]);
+            }
+            if (dropped) {
+              const hc = PS_PART_CH + home;
+              if (kbChannelExists(hc)) { await kbLoadChannel(hc); await kbLoadChannel(PS_PART_TMP2, "add"); }
+              else await kbLoadChannel(PS_PART_TMP2);
+              await save(hc);
+              if (changed.indexOf(home) < 0) changed.push(home);
+            }
           } else {
             // The removed pixels go back to the part that takes the rest (TOP / PANT, GOWN FRONT, …).
-            await kbLoadChannel(ch);
-            await kbLoadChannel(PS_PART_TMP, "intersect");
-            if (!kbSelectionBounds()) throw new Error("the selection does not touch " + name + ".");
+            if (trimmed) {
+              // the part's shape minus the trimmed selection = what to remove
+              await kbLoadChannel(ch);
+              await kbLoadChannel(PS_PART_TMP, "subtract");
+              if (!kbSelectionBounds()) throw new Error("the selection still holds all of " + name + ", so nothing is removed.");
+            } else {
+              await kbLoadChannel(ch);
+              await kbLoadChannel(PS_PART_TMP, "intersect");
+              if (!kbSelectionBounds()) throw new Error("the selection does not touch " + name + ".");
+            }
             await saveSelectionToChannel(PS_PART_TMP2);
             await kbLoadChannel(ch);
             await kbLoadChannel(PS_PART_TMP2, "subtract");
@@ -7215,7 +7303,7 @@
             if (kbChannelExists(hc)) { await kbLoadChannel(hc); await kbLoadChannel(PS_PART_TMP2, "add"); }
             else await kbLoadChannel(PS_PART_TMP2);
             await save(hc);
-            changed.push(home);
+            if (changed.indexOf(home) < 0) changed.push(home);
           }
         } finally {
           await kbRemoveChannels(PS_PART_TMP);
@@ -7224,20 +7312,23 @@
         }
         for (let i = 0; i < hard.length; i++) await psSoftenAfterSaveInModal(hard[i], softPx);   // soften again
         for (let i = 0; i < changed.length; i++) await psRedrawShapeInModal(changed[i]);
-        if (kbChannelExists(ch)) await kbLoadChannel(ch);
+        // the part's hard shape stays the selection, ready for the next grow / trim
+        psPartSelLoaded = null;
+        const back = kbChannelExists(psRawName(ch)) ? psRawName(ch) : (kbChannelExists(ch) ? ch : null);
+        if (back) { await kbLoadChannel(back); const b = psBoundsCopy(kbSelectionBounds()); if (b) psPartSelLoaded = { name: name, bounds: b }; }
         const sh = psShapeLayer(name);
         if (sh) await kbSelectLayerById(sh.id);
       }, { commandName: "KBImage — edit part" });
       const rec = logRecordSkeleton("printswap:edit-part", { part: name, mode: mode, changed: changed }, null, "selection");
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
-      trace("ps edit part: " + mode + " " + name + ", redrawn: " + changed.join(", "));
+      trace("ps edit part: " + mode + (trimmed ? " (trimmed shape)" : "") + " " + name + ", redrawn: " + changed.join(", "));
       try { await psHandEditRemember(changed.map(function (n) { return PS_PART_CH + n; })); } catch (e) { traceErr("ps hand-edit remember (edit part)", e); }
-      setStatus("ok", (mode === "add" ? "Added to " : "Removed from ") + name + "."
+      setStatus("ok", (mode === "add" ? "Added to " : (mode === "subtract" ? "Removed from " : "The selection is now ")) + name + "."
         + (changed.length > 1 ? " Also updated: " + changed.slice(1).join(", ") + "." : "") + " " + name + " is selected.");
     } catch (err) {
       traceErr("ps edit part", err);
-      setStatus("bad", "Could not " + (mode === "add" ? "add to " : "remove from ") + name + ": " + ((err && err.message) || String(err)));
+      setStatus("bad", "Could not " + verb + name + ": " + ((err && err.message) || String(err)));
     } finally {
       generateInFlight = false;
       try { psPartsRefreshList(); } catch (_) {}
@@ -10811,6 +10902,7 @@
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
       setStatus("ok", psTrimColorText({ hex: hex, per: per }) + (mm ? " " + mm : ""));
+      return true;
     } catch (err) {
       traceErr("ps trims: recolor " + names, err);
       if (opts.link) psTrimLink = false;
@@ -10982,15 +11074,50 @@
     const why = psTrimBlocked();
     if (why) { setStatus("bad", why); return; }                     // checked before the picker opens
     if (!psTrimBase(kind)) { setStatus("bad", "There is no " + K.group + " group yet. Find " + psTrimWord(kind) + " in step 4 and Accept, then pick its color."); psTrimColorSync(kind); return; }
-    const start = kbParseHex(psTrimColorShown(kind) || "#FFFFFF") || [255, 255, 255];
+    // v0.20.11: open at the trim's current color — its Color Fill layer, else the saved
+    // hex; white only when there is neither.
+    const prevHex = psTrimColorShown(kind);
+    let start = null, from = "white (no saved color)";
+    try { const f = await psTrimFillRgb(kind); if (f) { start = f; from = "its " + PS_TRIM_FILL + " layer"; } }
+    catch (e) { traceErr("ps trims: read " + PS_TRIM_FILL + " color", e); }
+    if (!start && prevHex && kbParseHex(prevHex)) { start = kbParseHex(prevHex); from = "the saved hex"; }
+    if (!start) start = [255, 255, 255];
+    trace("ps trims: " + K.group + " picker opens at " + psHex(start) + " (" + from + ")");
     let rgb = null;
     try { rgb = await psPickColor("Print Swap " + K.group + " color", start, "KBImage — pick " + K.group + " color"); }
     catch (e) { traceErr("ps trims: color picker", e); setStatus("bad", "The color picker did not open: " + ((e && e.message) || String(e))); psTrimColorSync(kind); return; }
     if (!rgb) { setStatus("ok", K.group + ": nothing picked."); psTrimColorSync(kind); return; }
     const hex = psHex(rgb);
-    const box = $("ps-tc-hex-" + kind); if (box) { box.value = hex; box.classList.remove("ps-bad"); }   // shown at once; the run keeps it on success
+    if (prevHex && hex === prevHex.toUpperCase()) { psTrimColorSync(kind); setStatus("ok", K.group + " stays " + hex + " (the same color was picked)."); return; }
+    // The pick in the panel at once: hex box, swatch, Custom… highlighted.
+    const box = $("ps-tc-hex-" + kind); if (box) { box.value = hex; box.classList.remove("ps-bad"); }
     const sw = $("ps-tc-sw-" + kind); if (sw) { sw.classList.remove("ps-swatch-none"); sw.style.backgroundColor = hex; }
-    await psTrimColorRun(kind, hex, { picked: true });
+    const g = $("pills-ps-tc-" + kind);
+    if (g) { const ps = g.querySelectorAll(".pill"); for (let i = 0; i < ps.length; i++) ps[i].classList.toggle("selected", ps[i].getAttribute("data-value") === "custom"); }
+    const kinds = psTrimRunKinds(kind);
+    const before = {}; kinds.forEach(function (k) { before[k] = psTrimColors[k] || null; });
+    if (await psTrimColorRun(kind, hex, { picked: true })) return;            // applied
+    // Not applied: the previous values back in the panel (and on the trims, if the old
+    // Color Fill was already deleted). psTrimColorRun's status line names the error.
+    for (let i = 0; i < kinds.length; i++) {
+      const k = kinds[i];
+      if (before[k]) psTrimColors[k] = before[k]; else delete psTrimColors[k];
+      if (before[k] && !psTrimColorLayers(k).length) { try { await psTrimColorReapply(k); } catch (e) { traceErr("ps trims: put back " + before[k], e); } }
+      psTrimColorSync(k);
+    }
+    trace("ps trims: " + K.group + " picked " + hex + " not applied; panel back to " + (prevHex || "Original"));
+  }
+  // The color on the trim's Color Fill 1 (shown), read from Photoshop; null when there is none.
+  async function psTrimFillRgb(kind) {
+    const fill = psTrimColorLayers(kind).filter(function (l) { return String(l.name) === PS_TRIM_FILL; })[0];
+    if (!fill) return null;
+    try { if (!fill.visible) return null; } catch (_) {}            // hidden = Original
+    const res = await psMod().action.batchPlay([{ _obj: "get", _target: [{ _ref: "layer", _id: fill.id }],
+      _options: { dialogOptions: "dontDisplay" } }], { synchronousExecution: true });
+    const adj = res && res[0] && res[0].adjustment;
+    const a = Array.isArray(adj) ? adj[0] : adj;
+    const c = a && a.color;
+    return c ? psPickerRgb({ color: c }, /float/i.test(String(c._obj || ""))) : null;
   }
 
   // ----- Order: trims above the GREY group; the veil (GREY copy 3) under the trims ----
@@ -12721,7 +12848,11 @@
         if (hair) { try { hair.visible = false; } catch (_) {} }      // HAIR sits on MERGED, not in it (as Finish)
         if (bg) { try { bg.visible = false; } catch (_) {} }          // original background in the final (as Finish)
         try {
-          newId = await kbStampVisibleInModal();                     // from an empty visible layer on top, never the hidden MERGED
+          const pbVis = psStampPbShowInModal();                      // PB and SDW in MERGED, as Finish
+          if (pbVis.shown.length) trace("ps merged: hidden before the stamp, shown for it: " + pbVis.shown.map(function (x) { return x.name; }).join(", "));
+          psStampVisibilityTrace("MERGED rebuild");
+          try { newId = await kbStampVisibleInModal(); }             // from an empty visible layer on top, never the hidden MERGED
+          finally { psStampPbRestoreInModal(pbVis); }
           // The versions group, made from Finish's MERGED the first time (in its place).
           let group = node, prev;
           if (replace) {
@@ -12768,6 +12899,64 @@
     }
   }
 
+  // v0.20.11: MERGED must hold PB (PIPING, BUTTON, BUTTON THREAD, their Trim lightness /
+  // Color Fill 1) and SDW. Inside executeAsModal, right before the stamp: PS, PB, SDW and
+  // anything in PB that is hidden is shown, except what is hidden on purpose — a trim at
+  // Original (its Trim lightness / Color Fill 1 / an old Hue/Saturation 1 stay off) and
+  // the GREY… layers in SDW (GREY is a hidden base). Returns { shown, kept }; shown goes
+  // back to hidden after the stamp (psStampPbRestoreInModal).
+  function psStampPbShowInModal() {
+    const shown = [], kept = [];
+    const label = function (l) { const par = (function () { try { return l.parent ? String(l.parent.name) + " › " : ""; } catch (_) { return ""; } })(); return par + String(l.name) + " (" + l.id + ")"; };
+    const vis = function (l) { try { return !!l.visible; } catch (_) { return true; } };
+    const show = function (l) { if (!l || vis(l)) return; try { l.visible = true; shown.push({ id: l.id, name: label(l) }); } catch (e) { traceErr("finish: show " + label(l), e); } };
+    const kindOfGroup = {}; Object.keys(PS_TRIM_KINDS).forEach(function (k) { kindOfGroup[PS_TRIM_KINDS[k].group] = k; });
+    const colorsKnown = psTrimColorDocId === psActiveDocId();
+    const isColorLayer = function (n) { return n === PS_TRIM_LIGHT || n === PS_TRIM_FILL || n === PS_TRIM_OLD_ADJ; };
+    const walkTrims = function (g, kind) {
+      let kids = []; try { kids = Array.from(g.layers || []); } catch (_) {}
+      for (let i = 0; i < kids.length; i++) {
+        const l = kids[i], n = String(l.name);
+        let isGroup = false; try { isGroup = !!l.layers; } catch (_) {}
+        const k = isGroup ? (kindOfGroup[n] || kind) : kind;
+        if (!vis(l) && !isGroup && isColorLayer(n)) {
+          // a recolor layer: on only while the trim has a saved color (and never the old Hue/Saturation 1)
+          if (n === PS_TRIM_OLD_ADJ || !colorsKnown || !k || !psTrimColors[k]) { kept.push(label(l) + (n === PS_TRIM_OLD_ADJ ? " old recolor" : (colorsKnown ? " trim at Original" : " colors not loaded"))); continue; }
+        }
+        show(l);
+        if (isGroup) walkTrims(l, k);
+      }
+    };
+    const P = psPsGroup(), pb = psPbGroup(), sdw = psSdwGroup();
+    show(P); show(pb); show(sdw);
+    if (pb) walkTrims(pb, null);
+    else {                                                       // an older file: the trim groups at the top level
+      Object.keys(PS_TRIM_KINDS).map(function (k) { return psTrimGroupNamed(PS_TRIM_KINDS[k].group); })
+        .concat([psTrimGroupNamed("BUTTON THREAD")]).filter(Boolean)
+        .forEach(function (g) { show(g); let isGroup = false; try { isGroup = !!g.layers; } catch (_) {} if (isGroup) walkTrims(g, kindOfGroup[String(g.name)] || null); });
+    }
+    if (sdw) {                                                   // SDW: its groups on; hidden layers (GREY base …) as they are
+      kbLayersWhere(function (l) { try { return !l.visible; } catch (_) { return false; } }, sdw).forEach(function (l) {
+        let isGroup = false; try { isGroup = !!l.layers; } catch (_) {}
+        if (isGroup) show(l); else kept.push(label(l) + " (SDW, hidden on purpose)");
+      });
+    }
+    return { shown: shown, kept: kept };
+  }
+  function psStampPbRestoreInModal(r) {
+    if (!r || !r.shown.length) return;
+    for (let i = r.shown.length - 1; i >= 0; i--) { const l = kbLayerById(r.shown[i].id); if (l) { try { l.visible = false; } catch (e) { traceErr("finish: hide " + r.shown[i].name + " again", e); } } }
+  }
+  // The top-level layers (and PS's / PB's children) with their visibility, at the stamp.
+  function psStampVisibilityTrace(why) {
+    const row = function (l) { let v = true, g = false; try { v = !!l.visible; g = !!l.layers; } catch (_) {} return String(l.name) + (g ? " [group]" : "") + (v ? " on" : " OFF"); };
+    let top = []; try { top = Array.from(psMod().app.activeDocument.layers); } catch (_) {}
+    const P = psPsGroup(), pb = psPbGroup();
+    const kids = function (g) { try { return Array.from(g.layers).map(row).join(", "); } catch (_) { return "?"; } };
+    trace("stamp (" + why + "): top level: " + top.map(row).join(", ")
+      + (P ? " | in PS: " + kids(P) : " | no PS group") + (pb ? " | in PB: " + kids(pb) : " | no PB group"));
+  }
+
   async function executePsFinish(params) {
     const ps = psMod();
     const doc = ps.app.activeDocument;
@@ -12790,7 +12979,13 @@
         step = "stamping the visible result";
         try { await deselectAll(); } catch (_) {}
         if (bg) { try { bg.visible = false; } catch (_) {} }          // original background in the final
-        mergedId = await kbStampVisibleInModal(); made.push(mergedId);   // from an empty visible layer on top
+        const pbVis = psStampPbShowInModal();                          // PB and SDW in MERGED (hidden ones shown for the stamp)
+        if (pbVis.shown.length) trace("ps finish: hidden before the stamp, shown for it: " + pbVis.shown.map(function (x) { return x.name; }).join(", "));
+        if (pbVis.kept.length) trace("ps finish: left hidden on purpose: " + pbVis.kept.join(", "));
+        psStampVisibilityTrace("Finish");
+        try { mergedId = await kbStampVisibleInModal(); made.push(mergedId); }   // from an empty visible layer on top
+        finally { psStampPbRestoreInModal(pbVis); }                    // as the retoucher had them
+        params.pbShown = pbVis.shown.length;
         try { await renameActiveLayer(PS_MERGED_NAME); } catch (_) {}
         const m = kbLayerById(mergedId);
         try { if (m && doc.layers[0].id !== mergedId) m.move(doc, EP.PLACEATBEGINNING); }   // above everything
@@ -12838,7 +13033,8 @@
       await psRecall(9, "ps-recall-anchor-9", { op: "printswap:finish", params: p, targetLayerId: null, sourceRef: "visible",
         paramsProvider: params, execute: executePsFinish });
       if (p.hair) { try { await psHandEditRemember([PS_HAIR_CH]); } catch (e) { traceErr("ps hand-edit remember (finish)", e); } }
-      setStatus("ok", "MERGED" + (p.hair ? " and HAIR" : "") + " on top" + (p.bgHidden ? ", original background back (BG LIGHTEN off)" : "") + ".");
+      setStatus("ok", "MERGED" + (p.hair ? " and HAIR" : "") + " on top" + (p.bgHidden ? ", original background back (BG LIGHTEN off)" : "") + "."
+        + (p.pbShown ? " " + p.pbShown + " hidden PB / SDW layer" + (p.pbShown === 1 ? " was" : "s were") + " shown for MERGED and hidden again (see the trace)." : ""));
     } catch (err) {
       traceErr("ps finish", err && err.cause ? err.cause : err);
       setStatus("bad", (err && err.message) || "Finish failed.");
