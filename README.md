@@ -17,4 +17,4 @@ A Photoshop panel that swaps the print on a garment photo, keeping the model, th
 * [Retoucher's guide](docs/README.md)
 * [Guide (PDF)](docs/KBImage-PrintSwap-Guide-v0.20.14.pdf)
 * [Changelog](CHANGELOG.md)
-* Install package: `KBImage\Handoff\KBImage-PrintSwap-v0.20.14.ccx` (in the Handoff folder, not in this repo)
+* [Install package (.ccx)](handoff/KBImage-PrintSwap-v0.20.14.ccx) · [Full handoff (.zip)](handoff/KBImage-PrintSwap-v0.20.14-Handoff.zip)
