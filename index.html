@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>KBImage Print Swap</title>
+    <title>KBImage Print Swap v0.20.13</title>
     <!-- CSS is inline (not an external <link>): UDT reloads the entry HTML live
          but does not reliably refresh linked sub-resources. Edit styles here. -->
     <style>
@@ -668,6 +668,7 @@ code {
 
 /* Header: product name + spacer before the view buttons. */
 .app-name { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.app-version { font-size: 11px; font-weight: 400; color: var(--dim); white-space: nowrap; }   /* filled from the manifest at run time */
 .topbar-fill { flex: 1 1 auto; }
 #ps-home-btn.active, #ps-home-btn:hover { color: var(--text); }
 
@@ -678,6 +679,7 @@ code {
     <header class="topbar">
       <img class="brand" src="icons/logo.png" alt="KBImage Print Swap" title="KBImage Print Swap" />
       <div class="app-name">KBImage Print Swap</div>
+      <div id="app-version" class="app-version"></div>
     </header>
     <!-- Navigation: data-view="printswap" / "settings" switch the view (showViewByClass); the active side is selected. -->
     <nav class="view-tabs">

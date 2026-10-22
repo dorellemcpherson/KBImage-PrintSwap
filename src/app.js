@@ -216,6 +216,28 @@
   function shellMod()  { return uxp().shell; }
   function psMod()     { return require("photoshop"); }
 
+  // The plug-in version in the header and the panel title: from the manifest at run
+  // time (uxp.versions.plugin, else manifest.json in the plug-in folder), else PS_VERSION.
+  const PS_VERSION = "0.20.13";                         // fallback only: bump with manifest.json each release
+  const PS_APP_NAME = "KBImage Print Swap";
+  async function kbPluginVersion() {
+    try { const v = uxp().versions && uxp().versions.plugin; if (v) return String(v); } catch (_) {}
+    try {
+      const f = await (await fsLocal().getPluginFolder()).getEntry("manifest.json");
+      const m = JSON.parse(await f.read({ format: fmts().utf8 }));
+      if (m && m.version) return String(m.version);
+    } catch (_) {}
+    return PS_VERSION;
+  }
+  async function kbShowVersion() {
+    const v = await kbPluginVersion();
+    const el = document.getElementById("app-version");
+    if (el) el.textContent = "v" + v;
+    try { document.title = PS_APP_NAME + " v" + v; } catch (_) {}
+    try { console.log(TAG, "version", v); } catch (_) {}
+  }
+  setTimeout(function () { kbShowVersion().catch(function () {}); }, 0);   // after every const below exists
+
   // UXP does NOT expose TextEncoder / TextDecoder as globals. Hand-rolled
   // UTF-8 helpers instead. secureStorage's setItem expects Uint8Array, so
   // we still need string ↔ bytes for the API key — just done by hand.
@@ -10792,10 +10814,8 @@
   // PIPING and BUTTON are opaque dyed fabric: masked to their channel at 100%, no Blend If.
   function psTrimOpaque(kind) { return kind === "piping" || kind === "buttons"; }
   const PS_TRIM_OLD_ADJ = "Hue/Saturation 1";              // earlier versions' BUTTON recolor
-  // v0.20.12: no White / Black chips. PIPING is custom only (swatch, hex box, Custom…);
-  // BUTTON and the other trims: Original and Custom….
-  function psTrimCustomOnly(kind) { return kind === "piping"; }
-  const PS_TRIM_DARK_FLOOR = 14;                           // the darkest a trim's median goes: folds and edges still read on Black
+  // v0.20.13: every trim row has two chips, Original and Custom… (no White / Black).
+  const PS_TRIM_DARK_FLOOR = 14;                           // the darkest a trim's median goes: folds and edges still read on a dark color
   let psTrimColors = {};                                   // kind → "#RRGGBB" (absent = Original), this document's
   let psTrimColorDocId = null;
   let psTrimLink = false;                                  // "Buttons same as piping", this document's (off by default)
@@ -10941,10 +10961,7 @@
     const why = psTrimBlocked();
     if (why) { setStatus("bad", why); return; }                   // the box and chip keep what was typed or picked
     if (!psTrimBase(kind)) { setStatus("bad", "There is no " + K.group + " group yet. Find " + psTrimWord(kind) + " in step 4 and Accept, then pick its color."); psTrimColorSync(kind); return; }
-    if (!hex) {
-      if (kinds.some(psTrimCustomOnly)) { psTrimColorSync(kind); setStatus("warn", K.group + " has no Original: pick its color with Custom… or type a hex."); return; }
-      return psTrimColorOriginal(kinds);
-    }
+    if (!hex) return psTrimColorOriginal(kinds);
     const names = psTrimGroups(kinds);
     generateInFlight = true;
     traceStart("Print Swap — recolor " + names);
@@ -10994,13 +11011,21 @@
     const names = psTrimGroups(kinds);
     generateInFlight = true;
     try {
+      // v0.20.13: PIPING / BUTTON at Original = the CLEAN cord, opaque: rebuilt (a group from
+      // an older version still had Blend If); the rebuild has no color (Color Fill 1 hidden).
+      const re = kinds.filter(function (k) { return psTrimOpaque(k) && psTrimBase(k); });
+      if (re.length) {
+        await psMod().core.executeAsModal(async function () { for (let i = 0; i < re.length; i++) await psBuildTrimGroupInModal(re[i], null); },
+          { commandName: "KBImage — rebuild " + psTrimGroups(re) });
+        trace("ps trims: " + psTrimGroups(re) + " rebuilt opaque for Original");
+      }
       let layers = [];
       kinds.forEach(function (k) { layers = layers.concat(psTrimColorLayers(k)); });
       await psMod().core.executeAsModal(async function () { layers.forEach(function (l) { try { l.visible = false; } catch (_) {} }); },
         { commandName: "KBImage — " + names + " original color" });
       kinds.forEach(function (k) { delete psTrimColors[k]; });
       await psTrimColorSave();
-      const mm = layers.length && !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;
+      const mm = (layers.length || re.length) && !psMergedHeld && psMergedAccepted() ? await psMergedRebuild(true) : null;
       const rec = logRecordSkeleton("printswap:trim-color", { kind: kinds[0], kinds: kinds, hex: null }, null, "trim:" + names);
       await logRun(rec);
       await logFinalizeCommitted(rec.id);
@@ -11054,26 +11079,18 @@
       const line = document.createElement("div"); line.className = "ps-gray-row";
       const sw = document.createElement("div"); sw.id = "ps-tc-sw-" + kind; sw.className = "ps-gray-swatch ps-swatch-none";
       const inp = document.createElement("input"); inp.id = "ps-tc-hex-" + kind; inp.className = "input"; inp.type = "text";
-      inp.setAttribute("placeholder", psTrimCustomOnly(kind) ? "Pick a color" : "Original"); inp.setAttribute("autocomplete", "off"); inp.setAttribute("spellcheck", "false");
+      inp.setAttribute("placeholder", "Original"); inp.setAttribute("autocomplete", "off"); inp.setAttribute("spellcheck", "false");
       // Enter or leaving the box applies it (with or without "#"); an invalid value only turns the box red
       inp.addEventListener("change", function () { psTrimColorFromBox(kind); });
       inp.addEventListener("keydown", function (e) { if (e.key === "Enter") psTrimColorFromBox(kind); });
       inp.addEventListener("input", function () { inp.classList.remove("ps-bad"); });
       line.appendChild(sw); line.appendChild(inp);
-      let pills;
-      if (psTrimCustomOnly(kind)) {                              // PIPING: one Custom… button, no Original
-        pills = document.createElement("div"); pills.className = "btn-row";
-        const b = document.createElement("div"); b.className = "btn-secondary btn-small"; b.setAttribute("role", "button"); b.setAttribute("tabindex", "0");
-        b.setAttribute("data-action", "ps-trim-color-custom"); b.setAttribute("data-trim", kind); b.textContent = "Custom…";
-        pills.appendChild(b);
-      } else {
-        pills = document.createElement("div"); pills.id = "pills-ps-tc-" + kind; pills.className = "pills pills-small ps-gray-chips"; pills.setAttribute("data-group", "ps-tc");
-        [["original", "Original"], ["custom", "Custom…"]].forEach(function (c) {
-          const p = document.createElement("div"); p.className = "pill"; p.setAttribute("role", "button"); p.setAttribute("tabindex", "0");
-          p.setAttribute("data-value", c[0]); p.textContent = c[1];
-          pills.appendChild(p);
-        });
-      }
+      const pills = document.createElement("div"); pills.id = "pills-ps-tc-" + kind; pills.className = "pills pills-small ps-gray-chips"; pills.setAttribute("data-group", "ps-tc");
+      [["original", "Original"], ["custom", "Custom…"]].forEach(function (c) {
+        const p = document.createElement("div"); p.className = "pill"; p.setAttribute("role", "button"); p.setAttribute("tabindex", "0");
+        p.setAttribute("data-value", c[0]); p.textContent = c[1];
+        pills.appendChild(p);
+      });
       row.id = "ps-tc-row-" + kind;
       row.appendChild(nm); row.appendChild(line); row.appendChild(pills);
       box.appendChild(row);
@@ -11133,17 +11150,12 @@
     box.classList.remove("ps-bad");
     const hex = rgb ? psHex(rgb) : null;
     if (hex === psTrimColorShown(kind)) { box.value = hex || ""; return; }   // the same color (Enter, then leaving the box): once
-    if (!hex && psTrimCustomOnly(kind)) {                         // PIPING: empty = no color yet, never Original / white
-      box.value = psTrimColorShown(kind) || "";
-      setStatus("warn", PS_TRIM_KINDS[kind].group + " needs a color: type a hex such as #692C2C and press Enter, or use Custom….");
-      return;
-    }
     psTrimColorRun(kind, hex);
   }
   function psOnTrimColorChip(kind, value) {
     if (!PS_TRIM_KINDS[kind]) return;
     if (value === "custom") { actPsTrimColorCustom(null, kind); return; }
-    if (value === "original" && !psTrimCustomOnly(kind)) psTrimColorRun(kind, null);
+    if (value === "original") psTrimColorRun(kind, null);
   }
   async function actPsTrimColor(srcEl) {
     const kind = srcEl && srcEl.getAttribute ? srcEl.getAttribute("data-trim") : null;
@@ -11189,7 +11201,7 @@
     // The pick in the panel at once: hex box, swatch, Custom… highlighted.
     const box = $("ps-tc-hex-" + kind); if (box) { box.value = hex; box.classList.remove("ps-bad"); }
     const sw = $("ps-tc-sw-" + kind); if (sw) { sw.classList.remove("ps-swatch-none"); sw.style.backgroundColor = hex; }
-    const g = $("pills-ps-tc-" + kind);                            // PIPING has no chips
+    const g = $("pills-ps-tc-" + kind);
     if (g) { const ps = g.querySelectorAll(".pill"); for (let i = 0; i < ps.length; i++) ps[i].classList.toggle("selected", ps[i].getAttribute("data-value") === "custom"); }
     const kinds = psTrimRunKinds(kind);
     const before = {}; kinds.forEach(function (k) { before[k] = psTrimColors[k] || null; });
