@@ -4145,25 +4145,46 @@
     const ps = psMod();
     const fg = psForegroundRgb();
     let res = null;
+    const t0 = Date.now();
     await ps.core.executeAsModal(async function () {
-      res = await ps.action.batchPlay([{ _obj: "showColorPicker", context: context,
+      res = await ps.action.batchPlay([{ _obj: "showColorPicker", _target: { _ref: "application" }, context: context,
         color: { _obj: "RGBColor", red: start[0], grain: start[1], blue: start[2] }, _options: { dialogOptions: "display" } }], { synchronousExecution: true });
     }, { commandName: commandName });
-    const now = psForegroundRgb();
+    const took = Date.now() - t0;
+    let now = psForegroundRgb();
     let raw = ""; try { raw = JSON.stringify(res); } catch (_) { raw = String(res); }
     const got = psPickerRgb(Array.isArray(res) ? res[0] : res);
-    const fgChanged = !!now && (!fg || now.join() !== fg.join());
+    let fgChanged = !!now && (!fg || now.join() !== fg.join());
+    // v0.20.12: a modeless picker (some Photoshop builds) returns before OK is clicked: the
+    // result echoes the start color and the foreground has not changed yet. Back faster than
+    // anyone can pick → poll the foreground every 250 ms for up to 60 s until it changes.
+    let polled = "";
+    if ((!got || got.join() === start.join()) && !fgChanged && took < PS_PICKER_FAST_MS) {
+      setStatus("busy", "Waiting for the color picker… pick a color and click OK.");
+      const until = Date.now() + PS_PICKER_POLL_MS;
+      let n = 0;
+      while (Date.now() < until) {
+        await new Promise(function (r) { setTimeout(r, 250); });
+        n++;
+        const f = psForegroundRgb();
+        if (f && (!fg || f.join() !== fg.join())) { now = f; fgChanged = true; break; }
+      }
+      polled = "; returned after " + took + " ms, foreground polled " + n + "× (" + (fgChanged ? "changed" : "no change in " + Math.round(PS_PICKER_POLL_MS / 1000) + " s") + ")";
+    } else polled = "; returned after " + took + " ms";
     let rgb = null, used = "nothing";
     if (got && got.join() !== start.join()) { rgb = got; used = "the batchPlay result"; }
     else if (fgChanged) { rgb = now; used = "fallback: the foreground color (changed " + (fg ? psHex(fg) : "?") + " → " + psHex(now) + ")"; }
     else if (got) { rgb = got; used = "the batchPlay result (the start color, unchanged)"; }
     const note = "color picker (" + context + ") start " + psHex(start) + ", raw result: " + raw
       + ", result read " + (got ? psHex(got) : "nothing") + ", foreground " + (fg ? psHex(fg) : "?") + " → " + (now ? psHex(now) : "?")
-      + " ⇒ " + (rgb ? psHex(rgb) : "nothing") + " (" + used + ")";
+      + polled + " ⇒ " + (rgb ? psHex(rgb) : "nothing") + " (" + used + ")";
     trace(note);
+    await traceFlush();                                 // on disk now, whatever run comes next
     kbPickerNote = note;                                // a run that starts its own trace right after puts it back (traceStart clears)
     return rgb;
   }
+  const PS_PICKER_FAST_MS = 600;                        // a picker back sooner than this was not used yet (modeless)
+  const PS_PICKER_POLL_MS = 60000;
   let kbPickerNote = null;
   function psForegroundRgb() {
     try {
@@ -4181,15 +4202,21 @@
     // v0.20.10: the picked color first. The result also echoes the `color` the picker was
     // opened with (the start color), so reading `color` first always gave the start back
     // (white on a trim at Original).
+    // v0.20.12: Photoshop's RGBFloatColor holds 0–255 values despite its name; reading it
+    // as 0–1 multiplied every pick by 255 (#692C2C → #FFFFFF). The scale now comes from the
+    // values: anything above 1 is 0–255; all ≤ 1 is 0–1 when the key says float or a
+    // value has a fraction.
     const keys = ["RGBFloatColor", "rgbFloatColor", "foregroundColor", "colour", "color"];
-    let c = null, isFloat = float;
-    for (let i = 0; i < keys.length && !c; i++) if (r[keys[i]] && typeof r[keys[i]] === "object") { c = r[keys[i]]; if (isFloat == null && /float/i.test(keys[i])) isFloat = true; }
+    let c = null, isFloat = float, floatKey = false;
+    for (let i = 0; i < keys.length && !c; i++) if (r[keys[i]] && typeof r[keys[i]] === "object") { c = r[keys[i]]; floatKey = /float/i.test(keys[i]); }
     if (!c) c = r;
-    if (isFloat == null && c._obj && /float/i.test(String(c._obj))) isFloat = true;
+    if (c._obj && /float/i.test(String(c._obj))) floatKey = true;
     const num = function (v) { if (v && typeof v === "object" && v._value != null) v = v._value; return Number(v); };
     let R = num(c.red), G = num(c.grain != null ? c.grain : c.green), B = num(c.blue);
     if (!(isFinite(R) && isFinite(G) && isFinite(B))) return null;
-    if (isFloat == null) isFloat = R <= 1 && G <= 1 && B <= 1 && !!(R % 1 || G % 1 || B % 1);
+    const small = R <= 1 && G <= 1 && B <= 1;
+    if (isFloat == null) isFloat = small && (floatKey || !!(R % 1 || G % 1 || B % 1));
+    else if (isFloat && !small) isFloat = false;
     if (isFloat) { R *= 255; G *= 255; B *= 255; }
     const cl = function (v) { return Math.max(0, Math.min(255, Math.round(v))); };
     return [cl(R), cl(G), cl(B)];
@@ -10546,21 +10573,18 @@
       made.push(px.id);
       try { px.visible = true; } catch (_) {}
       if (kind === "piping") {
-        // Outline only: KBPS garment pulled in by Edge margin, so color fringe at the
-        // garment edge never shows. The piping itself is left to Blend If.
-        // KBPS buttons are cut out of PIPING's mask: red / pink buttons pass the same Blend If as red piping.
-        if (bi && bi.fallback) await psMaskLayerToChannelInModal(px.id, K.ch, K.group, 0, [PS_BUTTONS_CH]);   // neutral piping: masked to what Find piping found
-        else {
-          await psMaskLayerToChannelInModal(px.id, PS_GARMENT_CH, K.group, psPipingMargin(), [PS_BUTTONS_CH]);
-          await psSelectLayerVerifiedInModal(px.id, K.group);
-          await psSetBlendIfInModal(bi);
-        }
+        // v0.20.12: opaque. Masked to KBPS piping (its edge softness is the only transition),
+        // Normal 100%, no Blend If (it faded the cord where the gray behind was darker).
+        // KBPS buttons stay cut out of PIPING's mask.
+        await psMaskLayerToChannelInModal(px.id, K.ch, K.group, 0, [PS_BUTTONS_CH]);
+        await psSetBlendInModal(px.id, "normal", 100);
       } else if (psIsSamTrim(kind)) {
         // LACE and the other SAM trims: masked to what SAM found (buttons cut out); Blend If keeps the trim's own white and texture.
         await psMaskLayerToChannelInModal(px.id, K.ch, K.group, 0, [PS_BUTTONS_CH]);
         if (bi && !bi.fallback) { await psSelectLayerVerifiedInModal(px.id, K.group); await psSetBlendIfInModal(bi); }
       } else {
         await psMaskLayerToChannelInModal(px.id, K.ch, K.group, psTrimShrink());
+        await psSetBlendInModal(px.id, "normal", 100);              // opaque, as PIPING
       }
       await psSelectLayerVerifiedInModal(px.id, K.group);
       const rgb = null;                                             // a chosen color is put back after the build (psTrimColorReapply)
@@ -10588,10 +10612,11 @@
       // rolled back (a failed rollback after this delete was how PIPING went missing).
       for (let i = 0; i < olds.length; i++) await psDeleteLayerInModal(olds[i].id);
       made.length = 0;
+      if (kind === "piping") { try { const gl = kbLayerById(gid); if (gl) gl.opacity = psPipingOpacity(); } catch (e) { traceErr("ps trims: PIPING opacity", e); } }
       try { await psLayoutFixInModal(); }                           // into PS › PB, above SDW and the parts
       catch (e) { traceErr("ps trims: " + K.group + " into " + PS_PS_GROUP + " › " + PS_PB_GROUP + " (left where it is)", e); }
       trace("ps trims: built " + K.group + " (group " + gid + ") from " + srcName + " " + srcId
-        + (kind === "piping" ? (bi.fallback ? ", masked to " + K.ch + " (Blend If could not separate it)" : ", garment mask pulled in " + psPipingMargin() + " px, Blend If " + bi.channel + (bi.dark ? " white " : " black ") + bi.a + "/" + bi.b)
+        + (kind === "piping" ? ", masked to " + K.ch + " (buttons cut out), Normal 100%, no Blend If, group opacity " + psPipingOpacity() + "%"
           : psIsSamTrim(kind) ? ", masked to " + K.ch + (bi && !bi.fallback ? ", Blend If " + bi.channel + (bi.dark ? " white " : " black ") + bi.a + "/" + bi.b : " (Blend If could not separate it)")
           : ", masked to " + K.ch + " (shrunk " + psTrimShrink() + " px)")
         + (rgb ? ", color " + rgb.join(",") : ", color fill off"));
@@ -10614,11 +10639,11 @@
     let msg = null, ok = false, recol = null;
     try {
       let bi = null;
-      if (kind === "piping" || psIsSamTrim(kind)) {
+      if (kind === "piping" || psIsSamTrim(kind)) {           // Blend If: the SAM trims only (PIPING is opaque)
         const cleanId = psAcceptedCleanId();
         if (cleanId == null) throw new Error(K.group + " needs an accepted CLEAN (step 3 Remove print).");
         if (!kbChannelExists(K.ch)) throw new Error(K.ch + " is missing.");
-        bi = await psPipingBlendIf(cleanId, K.ch);
+        if (psIsSamTrim(kind)) bi = await psPipingBlendIf(cleanId, K.ch);
       }
       await psMod().core.executeAsModal(async function () { await psBuildTrimGroupInModal(kind, bi); }, { commandName: "KBImage — " + K.group });
       // The trim's saved color, on the new group. Redo (step 4 or earlier) and Start over clear
@@ -10712,7 +10737,21 @@
 
   // Edge margin: PIPING's garment mask pulled in this many px (outline only).
   function psPipingMargin() { return Math.round(kbNum("ps-piping-margin", 6, 0, 50)); }
-  // Shrink mask: the BUTTON mask only (PIPING's mask is the garment outline).
+  // Step 4 Adjust › Piping opacity %: the PIPING group's opacity (100 = opaque fabric).
+  function psPipingOpacity() { return Math.round(kbNum("ps-piping-opacity", 100, 0, 100)); }
+  async function actPsPipingOpacity() {
+    if (generateInFlight) { kbBusyNote(); return; }
+    const g = psTrimGroupNamed(PS_PIPING_GRP);
+    if (!g) { setStatus("bad", "There is no PIPING group yet. Find piping in step 4 and Accept."); return; }
+    const v = psPipingOpacity();
+    const box = $("ps-piping-opacity"); if (box) box.value = String(v);
+    try {
+      await psMod().core.executeAsModal(async function () { const l = kbLayerById(g.id); if (l) l.opacity = v; }, { commandName: "KBImage — PIPING opacity" });
+      trace("ps trims: PIPING group opacity " + v + "%");
+      setStatus("ok", "PIPING at " + v + "% opacity.");
+    } catch (e) { traceErr("ps trims: PIPING opacity", e); setStatus("bad", "Could not set PIPING's opacity: " + ((e && e.message) || String(e))); }
+  }
+  // Shrink mask: the BUTTON mask only (PIPING's mask is KBPS piping as it stands).
   function psTrimShrink() { return Math.round(kbNum("ps-trim-shrink", 1, 0, 3)); }
   async function actPsPipingRemargin() {
     if (generateInFlight) { kbBusyNote(); return; }
@@ -10748,8 +10787,14 @@
   // document and put back when the trim group is built again.
   const PS_TRIM_LIGHT = "Trim lightness";
   const PS_TRIM_FILL = "Color Fill 1";
+  const PS_TRIM_TINT = "Color Fill 2";                     // PIPING / BUTTON: the same hex in Multiply over Color Fill 1
+  const PS_TRIM_TINT_MULT = 0.35;                          // its opacity (0–1): tune here
+  // PIPING and BUTTON are opaque dyed fabric: masked to their channel at 100%, no Blend If.
+  function psTrimOpaque(kind) { return kind === "piping" || kind === "buttons"; }
   const PS_TRIM_OLD_ADJ = "Hue/Saturation 1";              // earlier versions' BUTTON recolor
-  const PS_TRIM_CHIPS = { white: "#FFFFFF", black: "#000000" };
+  // v0.20.12: no White / Black chips. PIPING is custom only (swatch, hex box, Custom…);
+  // BUTTON and the other trims: Original and Custom….
+  function psTrimCustomOnly(kind) { return kind === "piping"; }
   const PS_TRIM_DARK_FLOOR = 14;                           // the darkest a trim's median goes: folds and edges still read on Black
   let psTrimColors = {};                                   // kind → "#RRGGBB" (absent = Original), this document's
   let psTrimColorDocId = null;
@@ -10780,7 +10825,7 @@
   // The recolor layers in the trim's group (Trim lightness, Color Fill 1, an old Hue/Saturation 1).
   function psTrimColorLayers(kind) {
     const K = PS_TRIM_KINDS[kind], g = K ? psTrimGroupNamed(K.group) : null, out = [];
-    try { const kids = g ? g.layers : []; for (let i = 0; i < kids.length; i++) { const n = String(kids[i].name); if (n === PS_TRIM_LIGHT || n === PS_TRIM_FILL || n === PS_TRIM_OLD_ADJ) out.push(kids[i]); } } catch (_) {}
+    try { const kids = g ? g.layers : []; for (let i = 0; i < kids.length; i++) { const n = String(kids[i].name); if (n === PS_TRIM_LIGHT || n === PS_TRIM_FILL || n === PS_TRIM_TINT || n === PS_TRIM_OLD_ADJ) out.push(kids[i]); } } catch (_) {}
     return out;
   }
   // Outside a modal: the trim's median lightness inside its channel, read from its own layer by id.
@@ -10797,7 +10842,7 @@
     return med;
   }
   // Inside executeAsModal: Trim lightness + Color Fill 1, clipped above the trim layer. Returns their ids.
-  async function psTrimColorLayersInModal(baseId, rgb, lv) {
+  async function psTrimColorLayersInModal(baseId, rgb, lv, kind) {
     const ps = psMod();
     await psSelectLayerVerifiedInModal(baseId, "the trim layer");
     const vals = psLevelsValues(lv.input[0], lv.input[1], lv.gamma, lv.output);
@@ -10810,7 +10855,17 @@
     } catch (e) { throw new Error("Setting " + PS_TRIM_LIGHT + " failed — Photoshop said: " + ((e && e.message) || String(e))); }
     try { const l = kbLayerById(lid); if (l) l.visible = true; } catch (_) {}
     const fid = await psMakeTrimFillInModal(rgb);                // Color mode, shown
-    return [lid, fid];
+    if (!psTrimOpaque(kind)) return [lid, fid];
+    // PIPING / BUTTON: the hue at full saturation, the cord's roundness kept (Multiply, PS_TRIM_TINT_MULT)
+    await psSelectLayerVerifiedInModal(fid, PS_TRIM_FILL);
+    const tid = await psMakeClippedInModal(PS_TRIM_TINT,
+      { _obj: "make", _target: [{ _ref: "contentLayer" }],
+        using: { _obj: "contentLayer", name: PS_TRIM_TINT, type: { _obj: "solidColorLayer", color: { _obj: "RGBColor", red: rgb[0], grain: rgb[1], blue: rgb[2] } } },
+        _options: { dialogOptions: "dontDisplay" } });
+    try { await psSetBlendInModal(tid, "multiply", Math.round(PS_TRIM_TINT_MULT * 100)); }
+    catch (e) { throw new Error("Setting " + PS_TRIM_TINT + " to Multiply failed — Photoshop said: " + ((e && e.message) || String(e))); }
+    try { const l = kbLayerById(tid); if (l) l.visible = true; } catch (_) {}
+    return [lid, fid, tid];
   }
   function psTrimGroups(kinds) { return (kinds || []).map(function (k) { return (PS_TRIM_KINDS[k] || { group: "Trim" }).group; }).join(" and "); }
   function psTrimColorText(p) {
@@ -10856,7 +10911,7 @@
         if (!base) throw new Error("there is no " + PS_TRIM_KINDS[q.kind].group + " group any more.");
         const old = psTrimColorLayers(q.kind);
         for (let k = 0; k < old.length; k++) if (kbLayerById(old[k].id)) await psDeleteLayerInModal(old[k].id);   // the old pair, replaced
-        ids = ids.concat(await psTrimColorLayersInModal(base.id, rgb, q.levels));
+        ids = ids.concat(await psTrimColorLayersInModal(base.id, rgb, q.levels, q.kind));
       }
     }, { commandName: "KBImage — recolor " + names });
     trace("ps trims: recolor " + names + " " + hex + ", " + per.map(function (q) { return q.kind + " median " + q.median + " → " + q.target + ", Levels " + JSON.stringify(q.levels); }).join("; ") + ", layers " + ids.join(", "));
@@ -10886,13 +10941,26 @@
     const why = psTrimBlocked();
     if (why) { setStatus("bad", why); return; }                   // the box and chip keep what was typed or picked
     if (!psTrimBase(kind)) { setStatus("bad", "There is no " + K.group + " group yet. Find " + psTrimWord(kind) + " in step 4 and Accept, then pick its color."); psTrimColorSync(kind); return; }
-    if (!hex) return psTrimColorOriginal(kinds);
+    if (!hex) {
+      if (kinds.some(psTrimCustomOnly)) { psTrimColorSync(kind); setStatus("warn", K.group + " has no Original: pick its color with Custom… or type a hex."); return; }
+      return psTrimColorOriginal(kinds);
+    }
     const names = psTrimGroups(kinds);
     generateInFlight = true;
     traceStart("Print Swap — recolor " + names);
     if (opts.picked && kbPickerNote) trace(kbPickerNote);   // what the picker returned, kept in this run's trace
     kbPickerNote = null;
+    let rebuilt = [];
     try {
+      // v0.20.12: PIPING / BUTTON rebuilt first (opaque, masked to their channel) so a
+      // color pick shows the opaque look at once, also on a group built by an older version.
+      const re = kinds.filter(psTrimOpaque);
+      if (re.length) {
+        setStatus("busy", "Rebuilding " + psTrimGroups(re) + "…");
+        await psMod().core.executeAsModal(async function () { for (let i = 0; i < re.length; i++) await psBuildTrimGroupInModal(re[i], null); },
+          { commandName: "KBImage — rebuild " + psTrimGroups(re) });
+        rebuilt = re;
+      }
       const per = await psTrimColorApply(kinds, hex);
       kinds.forEach(function (k) { psTrimColors[k] = hex; });
       if (opts.link) psTrimLink = true;
@@ -10906,6 +10974,11 @@
     } catch (err) {
       traceErr("ps trims: recolor " + names, err);
       if (opts.link) psTrimLink = false;
+      for (let i = 0; i < rebuilt.length; i++) {                     // a rebuilt group gets its previous color back
+        if (psTrimColors[rebuilt[i]] && !psTrimColorLayers(rebuilt[i]).some(function (l) { return String(l.name) === PS_TRIM_FILL; })) {
+          try { await psTrimColorReapply(rebuilt[i]); } catch (e) { traceErr("ps trims: put back " + psTrimColors[rebuilt[i]], e); }
+        }
+      }
       setStatus("bad", "Could not recolor " + names + ": " + ((err && err.message) || String(err)));
     } finally {
       generateInFlight = false;
@@ -10949,7 +11022,7 @@
         const base = psTrimBase(kind); if (!base) return;
         const old = psTrimColorLayers(kind);
         for (let i = 0; i < old.length; i++) await psDeleteLayerInModal(old[i].id);
-        await psTrimColorLayersInModal(base.id, rgb, lv);
+        await psTrimColorLayersInModal(base.id, rgb, lv, kind);
       }, { commandName: "KBImage — " + PS_TRIM_KINDS[kind].group + " color" });
       trace("ps trims: " + PS_TRIM_KINDS[kind].group + " color " + hex + " put back (median " + med + ", Levels " + JSON.stringify(lv) + ")");
       return hex;
@@ -10965,8 +11038,7 @@
     const box = $("ps-tc-hex-" + kind); if (box) { box.value = hex || ""; box.classList.remove("ps-bad"); }
     const g = $("pills-ps-tc-" + kind);
     if (g) {
-      let which = hex ? "custom" : "original";
-      Object.keys(PS_TRIM_CHIPS).forEach(function (k) { if (hex && PS_TRIM_CHIPS[k] === hex.toUpperCase()) which = k; });
+      const which = hex ? "custom" : "original";
       const ps = g.querySelectorAll(".pill");
       for (let i = 0; i < ps.length; i++) ps[i].classList.toggle("selected", ps[i].getAttribute("data-value") === which);
     }
@@ -10982,18 +11054,26 @@
       const line = document.createElement("div"); line.className = "ps-gray-row";
       const sw = document.createElement("div"); sw.id = "ps-tc-sw-" + kind; sw.className = "ps-gray-swatch ps-swatch-none";
       const inp = document.createElement("input"); inp.id = "ps-tc-hex-" + kind; inp.className = "input"; inp.type = "text";
-      inp.setAttribute("placeholder", "Original"); inp.setAttribute("autocomplete", "off"); inp.setAttribute("spellcheck", "false");
+      inp.setAttribute("placeholder", psTrimCustomOnly(kind) ? "Pick a color" : "Original"); inp.setAttribute("autocomplete", "off"); inp.setAttribute("spellcheck", "false");
       // Enter or leaving the box applies it (with or without "#"); an invalid value only turns the box red
       inp.addEventListener("change", function () { psTrimColorFromBox(kind); });
       inp.addEventListener("keydown", function (e) { if (e.key === "Enter") psTrimColorFromBox(kind); });
       inp.addEventListener("input", function () { inp.classList.remove("ps-bad"); });
       line.appendChild(sw); line.appendChild(inp);
-      const pills = document.createElement("div"); pills.id = "pills-ps-tc-" + kind; pills.className = "pills pills-small ps-gray-chips"; pills.setAttribute("data-group", "ps-tc");
-      [["original", "Original"], ["white", "White"], ["black", "Black"], ["custom", "Custom…"]].forEach(function (c) {
-        const p = document.createElement("div"); p.className = "pill"; p.setAttribute("role", "button"); p.setAttribute("tabindex", "0");
-        p.setAttribute("data-value", c[0]); p.textContent = c[1];
-        pills.appendChild(p);
-      });
+      let pills;
+      if (psTrimCustomOnly(kind)) {                              // PIPING: one Custom… button, no Original
+        pills = document.createElement("div"); pills.className = "btn-row";
+        const b = document.createElement("div"); b.className = "btn-secondary btn-small"; b.setAttribute("role", "button"); b.setAttribute("tabindex", "0");
+        b.setAttribute("data-action", "ps-trim-color-custom"); b.setAttribute("data-trim", kind); b.textContent = "Custom…";
+        pills.appendChild(b);
+      } else {
+        pills = document.createElement("div"); pills.id = "pills-ps-tc-" + kind; pills.className = "pills pills-small ps-gray-chips"; pills.setAttribute("data-group", "ps-tc");
+        [["original", "Original"], ["custom", "Custom…"]].forEach(function (c) {
+          const p = document.createElement("div"); p.className = "pill"; p.setAttribute("role", "button"); p.setAttribute("tabindex", "0");
+          p.setAttribute("data-value", c[0]); p.textContent = c[1];
+          pills.appendChild(p);
+        });
+      }
       row.id = "ps-tc-row-" + kind;
       row.appendChild(nm); row.appendChild(line); row.appendChild(pills);
       box.appendChild(row);
@@ -11053,12 +11133,17 @@
     box.classList.remove("ps-bad");
     const hex = rgb ? psHex(rgb) : null;
     if (hex === psTrimColorShown(kind)) { box.value = hex || ""; return; }   // the same color (Enter, then leaving the box): once
+    if (!hex && psTrimCustomOnly(kind)) {                         // PIPING: empty = no color yet, never Original / white
+      box.value = psTrimColorShown(kind) || "";
+      setStatus("warn", PS_TRIM_KINDS[kind].group + " needs a color: type a hex such as #692C2C and press Enter, or use Custom….");
+      return;
+    }
     psTrimColorRun(kind, hex);
   }
   function psOnTrimColorChip(kind, value) {
     if (!PS_TRIM_KINDS[kind]) return;
     if (value === "custom") { actPsTrimColorCustom(null, kind); return; }
-    psTrimColorRun(kind, value === "original" ? null : PS_TRIM_CHIPS[value]);
+    if (value === "original" && !psTrimCustomOnly(kind)) psTrimColorRun(kind, null);
   }
   async function actPsTrimColor(srcEl) {
     const kind = srcEl && srcEl.getAttribute ? srcEl.getAttribute("data-trim") : null;
@@ -11068,6 +11153,8 @@
   // open to sample (for example the print's sage green).
   async function actPsTrimColorCustom(srcEl, kindIn) {
     const kind = kindIn || (srcEl && srcEl.getAttribute ? srcEl.getAttribute("data-trim") : null);
+    trace("ps trims: Custom… clicked for " + kind);
+    await traceFlush();
     const K = PS_TRIM_KINDS[kind];
     if (!K) return;
     if (kind === "buttons" && psTrimLinked()) { psTrimColorSync(kind); setStatus("bad", "BUTTON follows PIPING. Turn off Buttons same as piping to set it on its own."); return; }
@@ -11077,22 +11164,32 @@
     // v0.20.11: open at the trim's current color — its Color Fill layer, else the saved
     // hex; white only when there is neither.
     const prevHex = psTrimColorShown(kind);
-    let start = null, from = "white (no saved color)";
+    // Open at the trim's color: its Color Fill 1, else the saved hex, else the cord's own
+    // lightness as a gray (v0.20.12: never white or black).
+    let start = null, from = "";
     try { const f = await psTrimFillRgb(kind); if (f) { start = f; from = "its " + PS_TRIM_FILL + " layer"; } }
     catch (e) { traceErr("ps trims: read " + PS_TRIM_FILL + " color", e); }
     if (!start && prevHex && kbParseHex(prevHex)) { start = kbParseHex(prevHex); from = "the saved hex"; }
-    if (!start) start = [255, 255, 255];
+    if (!start) {
+      let m = 128;
+      try { m = Math.round(await psTrimMedian(kind)); from = "no color yet: the cord's median lightness"; }
+      catch (e) { traceErr("ps trims: median for the picker start", e); from = "no color yet: mid gray"; }
+      start = [m, m, m];
+    }
+    const noColor = !prevHex;
     trace("ps trims: " + K.group + " picker opens at " + psHex(start) + " (" + from + ")");
     let rgb = null;
     try { rgb = await psPickColor("Print Swap " + K.group + " color", start, "KBImage — pick " + K.group + " color"); }
-    catch (e) { traceErr("ps trims: color picker", e); setStatus("bad", "The color picker did not open: " + ((e && e.message) || String(e))); psTrimColorSync(kind); return; }
-    if (!rgb) { setStatus("ok", K.group + ": nothing picked."); psTrimColorSync(kind); return; }
+    catch (e) { traceErr("ps trims: color picker", e); await traceFlush(); setStatus("bad", "The color picker did not open: " + ((e && e.message) || String(e))); psTrimColorSync(kind); return; }
+    // the start color back with no color set = nothing chosen (the start is only a starting point)
+    if (rgb && noColor && rgb.join() === start.join()) { trace("ps trims: " + K.group + " picker gave back its start color; nothing applied"); rgb = null; }
+    if (!rgb) { await traceFlush(); setStatus("ok", K.group + ": nothing picked."); psTrimColorSync(kind); return; }
     const hex = psHex(rgb);
-    if (prevHex && hex === prevHex.toUpperCase()) { psTrimColorSync(kind); setStatus("ok", K.group + " stays " + hex + " (the same color was picked)."); return; }
+    if (prevHex && hex === prevHex.toUpperCase()) { await traceFlush(); psTrimColorSync(kind); setStatus("ok", K.group + " stays " + hex + " (the same color was picked)."); return; }
     // The pick in the panel at once: hex box, swatch, Custom… highlighted.
     const box = $("ps-tc-hex-" + kind); if (box) { box.value = hex; box.classList.remove("ps-bad"); }
     const sw = $("ps-tc-sw-" + kind); if (sw) { sw.classList.remove("ps-swatch-none"); sw.style.backgroundColor = hex; }
-    const g = $("pills-ps-tc-" + kind);
+    const g = $("pills-ps-tc-" + kind);                            // PIPING has no chips
     if (g) { const ps = g.querySelectorAll(".pill"); for (let i = 0; i < ps.length; i++) ps[i].classList.toggle("selected", ps[i].getAttribute("data-value") === "custom"); }
     const kinds = psTrimRunKinds(kind);
     const before = {}; kinds.forEach(function (k) { before[k] = psTrimColors[k] || null; });
@@ -12912,7 +13009,7 @@
     const show = function (l) { if (!l || vis(l)) return; try { l.visible = true; shown.push({ id: l.id, name: label(l) }); } catch (e) { traceErr("finish: show " + label(l), e); } };
     const kindOfGroup = {}; Object.keys(PS_TRIM_KINDS).forEach(function (k) { kindOfGroup[PS_TRIM_KINDS[k].group] = k; });
     const colorsKnown = psTrimColorDocId === psActiveDocId();
-    const isColorLayer = function (n) { return n === PS_TRIM_LIGHT || n === PS_TRIM_FILL || n === PS_TRIM_OLD_ADJ; };
+    const isColorLayer = function (n) { return n === PS_TRIM_LIGHT || n === PS_TRIM_FILL || n === PS_TRIM_TINT || n === PS_TRIM_OLD_ADJ; };
     const walkTrims = function (g, kind) {
       let kids = []; try { kids = Array.from(g.layers || []); } catch (_) {}
       for (let i = 0; i < kids.length; i++) {
@@ -13655,6 +13752,7 @@
     "ps-edit-trim":          actPsEditTrim,
     "ps-trim-color":         actPsTrimColor,
     "ps-trim-color-custom":  actPsTrimColorCustom,
+    "ps-piping-opacity":     actPsPipingOpacity,
     "ps-trim-reshrink":      actPsTrimReshrink,
     "ps-save-piping-case":   actPsSavePipingCase,
     "ps-piping-remargin":    actPsPipingRemargin,
