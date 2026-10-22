@@ -13,3 +13,9 @@ printswap-trace.txt
 *.tiff
 *.jpg
 *.jpeg
+
+# Build leftovers and packages (the .ccx lives in KBImage\Handoff, outside this repo)
+readme-frames/
+*.bak
+/*.ccx
+Handoff/

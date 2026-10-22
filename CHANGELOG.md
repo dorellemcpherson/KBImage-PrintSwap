@@ -1,25 +1,32 @@
 # KBImage Print Swap: changelog
 
-Newest first. Versions marked *Photoshop test pending* were built and checked offline but not yet confirmed in Photoshop.
+Newest first. 0.20.14 is the current release.
 
-## 0.20.14 (2026-10-22) · Photoshop test pending
+## Known limits (0.20.14)
+
+* Select Subject and the automatic Select and Mask are off (they crashed the GPU on the test laptop). SAM 3.1 finds the person and hair instead.
+* Hand-painted layer masks are not kept. Use the panel's buttons.
+* 16-bit files and files over 6000 px are slow. Convert to 8-bit first.
+* Versions 0.20.11–0.20.14 were tested on one machine. Treat this as a beta.
+
+## 0.20.14 (2026-10-22)
 
 * **Step 5, Highlights from photo %** (default 60, 0 = off): GREY exact keeps the satin sheen of the original photo, which Remove print had made matte. Sharp edges of the old print are left out. It is saved with the document, and **Update gray** applies a changed value.
 * **Step 8:** Highlights % now starts at 25 on light prints (dark prints stay at 40).
 
-## 0.20.13 (2026-10-22) · Photoshop test pending
+## 0.20.13 (2026-10-22)
 
 * **Trim colors:** every trim row (PIPING, BUTTON and the other trims) has two chips, **Original** and **Custom…**. Original shows the cord uncolored and opaque. You can also type a hex and press Enter.
 * **Version in the header:** the panel title shows the version, e.g. "KBImage Print Swap v0.20.13", read from the plug-in itself.
 
-## 0.20.12 (2026-10-22) · Photoshop test pending
+## 0.20.12 (2026-10-22)
 
 * **Custom… color picker fixed:** the picked color was read at the wrong scale and came out white. It now reads the color correctly, waits for the picker if Photoshop returns early, and writes what it read to the trace file at once.
 * **Opaque piping and buttons:** PIPING and BUTTON now look like solid dyed fabric. They are masked to the found trim at full strength, with no see-through Blend If. A color adds a second, Multiply color layer (35%) so the cord keeps its roundness.
 * **Piping opacity %** in step 4 › Adjust.
 * White and Black chips removed.
 
-## 0.20.11 (2026-10-22) · Photoshop test pending
+## 0.20.11 (2026-10-22)
 
 * **Step 6, parts:**
   * New **Use selection as part** button.
@@ -29,7 +36,7 @@ Newest first. Versions marked *Photoshop test pending* were built and checked of
 * **Custom… color picker** opens at the trim's current color. If a color can't be applied, the old one comes back.
 * **Finish** always includes PB (piping, buttons and their colors) and SDW in MERGED, even if they were hidden. The trace lists what was visible at the moment of the stamp.
 
-## 0.20.3 to 0.20.10 (2026-10-19 to 2026-10-20) · Photoshop test pending
+## 0.20.3 to 0.20.10 (2026-10-19 to 2026-10-20)
 
 * **Fewer crashes on large files:** images are read in strips, which avoids the graphics crashes.
 * **Edges:** the Edge softness sliders are always visible.

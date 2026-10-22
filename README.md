@@ -1,66 +1,20 @@
 # KBImage Print Swap
 
-A Photoshop panel that swaps the print on a garment photo for the retouching team. It builds the same layers, in the same order and with the same names, as the team's print swap file, and uses AI only where it saves time. Every step is checked and accepted by the retoucher before the next one runs.
+A Photoshop panel that swaps the print on a garment photo, keeping the model, the folds, the trims and the lighting, and building the same layers as the team's print swap file.
 
-![KBImage Print Swap: the finished swap with the panel](docs/screenshots/15-step9-finish.png)
+**A print swap that took a retoucher 2½ hours or more by hand takes 30 minutes or less with the panel.**
 
-**Version** 0.20.1 · **Plug-in id** `com.komar.kbimage.printswap` · **Photoshop** 2022 (23.3) or newer · **Tested on** Photoshop 2025 (v26) and Photoshop 2026 (v27)
+**Version** 0.20.14 · Photoshop 23.3 or newer (tested on v27)
 
-## Install (UXP Developer Tool)
+## Install
 
-1. Install the **UXP Developer Tool** from the Creative Cloud desktop app (All apps).
-2. In Photoshop, turn on Developer Mode: **Edit > Preferences > Plugins** (Mac: **Photoshop > Settings > Plugins**), tick **Enable Developer Mode**, then restart Photoshop.
-3. With Photoshop open, open the UXP Developer Tool and click **Add Plugin**. Choose `manifest.json` in this folder.
-4. On the plug-in's row click **•••** > **Load**.
-5. In Photoshop open **Plugins > KBImage Print Swap**.
+1. Close Photoshop and double-click `KBImage-PrintSwap-v0.20.14.ccx`; Creative Cloud installs it.
+2. Open Photoshop › **Plugins › KBImage Print Swap**.
+3. In **Settings**, paste the Fal API key, set a PIN, click **Test Connection**, then **Save**.
 
-**After an update:** **•••** > **Remove**, then **Add Plugin** and **Load** again. Reload does not always pick up changes.
-**After Photoshop restarts:** open the UXP Developer Tool and click **Load** again.
-**For retouchers:** the plug-in can be packaged as a `.ccx` file (**•••** > **Package**) and installed by IT, with no Developer Mode needed.
+## Links
 
-## Quick start
-
-1. Install the panel (above).
-2. In Photoshop open **Plugins > KBImage Print Swap**.
-3. Open the **Settings** tab, paste the **Fal API key**, set an admin PIN, click **Save**.
-4. Open the garment photo and work through steps 0 to 9, clicking **Accept** after each (step 0, Upscale, is optional: **Skip** it for a large photo).
-
-## The 9 steps
-
-Upscale (optional, step 0) · Background · Garment · Remove print · Trims · Gray · Parts · Print and Color · Shading · Finish
-
-| Step | Screenshot |
-|---|---|
-| 1 Background | <img src="docs/screenshots/05-step1-background.png" width="420" alt="Step 1 Background"> |
-| 2 Garment | <img src="docs/screenshots/06-step2-garment.png" width="420" alt="Step 2 Garment"> |
-| 3 Remove print | <img src="docs/screenshots/08-step3-clean.png" width="420" alt="Step 3 Remove print"> |
-| 4 Trims | <img src="docs/screenshots/09-step4-trims.png" width="420" alt="Step 4 Trims"> |
-| 5 Gray | <img src="docs/screenshots/10-step5-gray.png" width="420" alt="Step 5 Gray"> |
-| 6 Parts | <img src="docs/screenshots/11-step6-parts.png" width="420" alt="Step 6 Parts"> |
-| 9 Finish: Layers panel | <img src="docs/screenshots/16-layers-final.png" width="420" alt="Step 9 Finish: Layers panel"> |
-
-Screenshots of steps 7 (Print) and 8 (Shading) are still to come; the full walkthrough is in the [user guide](docs/user-guide.md).
-
-## AI used (all through one Fal key)
-
-| Model | Used for | Cost |
-|---|---|---|
-| SAM 3.1 | Finding the garment, hands, trims and parts | $0.005 per request |
-| Nano Banana Pro | Removing the old print (step 3) | $0.15 per image ($0.30 at 4K) |
-| Topaz (Standard V2) | Upscaling the photo (step 0, optional) | $0.08 per image up to 24 MP out, $0.16 to 48 MP |
-
-A full run on a 4480 × 6720 photo costs about $0.35 to $0.55. Everything else is plain Photoshop.
-
-## Documents
-
-| Document | For |
-|---|---|
-| [User guide](docs/user-guide.md) | Retouchers: install, every step, every button, troubleshooting |
-| [Rules and best practices](docs/print-swap-guide.md) | Retouchers: inputs, rules, what to check |
-| [Garment types and part names](docs/parts-list.md) | Types A to H, parts and protected trims |
-| [Design doc](docs/design-doc.md) | Review and approval: why, how, scope, risks |
-| [CLAUDE.md](CLAUDE.md) | Developers: build rules |
-
-## Files
-
-`manifest.json` · `index.html` · `src/app.js` · `icons/` · `docs/`
+* [Retoucher's guide](docs/README.md)
+* [Guide (PDF)](docs/KBImage-PrintSwap-Guide-v0.20.14.pdf)
+* [Changelog](CHANGELOG.md)
+* Install package: `KBImage\Handoff\KBImage-PrintSwap-v0.20.14.ccx` (in the Handoff folder, not in this repo)

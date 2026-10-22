@@ -6,6 +6,15 @@ Photoshop UXP panel (`manifest.json`, `index.html`, `src/app.js`). One view, Pri
 (`fal-ai/topaz/upscale/image`, step 0, optional). Read
 `README.md` for what the panel does and `docs/` for the retouchers' guide and part names.
 
+## Where the work happens
+
+* **Main copy:** `C:\Users\dorelle.mcpherson\KBImage\KBImage-PrintSwap` on Dorelle's computer
+  (msi-26041401-dm). Read, edit and test there, not in a cloud copy. It is a git clone of
+  `https://github.com/dorellemcpherson/KBImage-PrintSwap.git` (branch `main`).
+* **Tests live in that folder** (`tests/`, not in GitHub) and run there with Node.
+* **Old builds:** `KBImage\_archive\` (v0.14, v0.15-preview, and the older KBImage repo files) is
+  for reference only. Do not edit or load it.
+
 ## Build rules
 
 1. **No ES modules, no top-level `require()`.** One non-module `<script src="src/app.js">`;
