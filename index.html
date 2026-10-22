@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>KBImage Print Swap v0.20.13</title>
+    <title>KBImage Print Swap v0.20.14</title>
     <!-- CSS is inline (not an external <link>): UDT reloads the entry HTML live
          but does not reliably refresh linked sub-resources. Edit styles here. -->
     <style>
@@ -1006,6 +1006,10 @@ code {
             <div class="pill" role="button" tabindex="0" data-value="dark">Dark</div>
             <div class="pill" role="button" tabindex="0" data-value="custom">Custom…</div>
           </div>
+          <div class="field">
+            <span class="field-label">Highlights from photo % (0 = off)</span>
+            <input id="ps-gray-hl" class="input" type="text" value="60" autocomplete="off" spellcheck="false" />
+          </div>
           <div class="ps-main">
             <div id="ps-gray-btn" class="btn-primary disabled" role="button" tabindex="0" data-action="ps-make-gray">Make gray</div>
             <div id="ps-gray-cost" class="ps-cost">Photoshop · free</div>
@@ -1148,7 +1152,7 @@ code {
           <div class="field"><span class="field-label">Fold smoothing (px)</span><input id="ps-sh-smooth" class="input" type="text" value="" placeholder="auto" autocomplete="off" spellcheck="false" /></div>
           <div class="field"><span class="field-label">Fold light %</span><input id="ps-sh-light" class="input" type="text" value="50" autocomplete="off" spellcheck="false" /></div>
           <div class="field"><span class="field-label">Burn %</span><input id="ps-sh-burn" class="input" type="text" value="40" autocomplete="off" spellcheck="false" /></div>
-          <div class="field"><span class="field-label">Highlights %</span><input id="ps-sh-hi" class="input" type="text" value="0" autocomplete="off" spellcheck="false" /></div>
+          <div class="field"><span class="field-label">Highlights %</span><input id="ps-sh-hi" class="input" type="text" value="25" autocomplete="off" spellcheck="false" /></div>
           <div class="ps-tone-row">
             <span class="field-label ps-tone-label">Warm shadows</span>
             <div id="pills-ps-sh-warm" class="pills pills-small" data-group="ps-sh-warm">

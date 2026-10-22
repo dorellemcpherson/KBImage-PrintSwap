@@ -157,6 +157,10 @@
       if (typeof psGrayFromBox === "function") psGrayFromBox();
       return;
     }
+    if (t.id === "ps-gray-hl") {
+      if (typeof psGrayHlFromBox === "function") psGrayHlFromBox();
+      return;
+    }
     if (t.id === "ps-garment-grow") {
       try { psRefreshUi(); } catch (_) {}
       return;
@@ -218,7 +222,7 @@
 
   // The plug-in version in the header and the panel title: from the manifest at run
   // time (uxp.versions.plugin, else manifest.json in the plug-in folder), else PS_VERSION.
-  const PS_VERSION = "0.20.13";                         // fallback only: bump with manifest.json each release
+  const PS_VERSION = "0.20.14";                         // fallback only: bump with manifest.json each release
   const PS_APP_NAME = "KBImage Print Swap";
   async function kbPluginVersion() {
     try { const v = uxp().versions && uxp().versions.plugin; if (v) return String(v); } catch (_) {}
@@ -4109,7 +4113,9 @@
   function psGrayNeedsUpdate() {
     try {
       const g = psGreyExactLayer(); if (!g || psIsPending(g.id)) return false;
-      const t = psTargetHex(); return !!t && t.hex !== psGrayMade();
+      const t = psTargetHex(); if (!!t && t.hex !== psGrayMade()) return true;
+      const mh = psGrayDoc.docId === psActiveDocId() && psGrayDoc.madeHl != null ? psGrayDoc.madeHl : null;
+      return mh != null && mh !== psGrayHlPct();                 // Highlights from photo changed since
     } catch (_) { return false; }
   }
   async function psGraySaveDoc(fields) {
@@ -4245,9 +4251,19 @@
   }
   // This document's gray (from its saved state; default Mid).
   function psGrayFromDocState(id, st) {
-    psGrayDoc = { docId: id, made: (st && st.grayMade) || null };
+    psGrayDoc = { docId: id, made: (st && st.grayMade) || null, madeHl: st && st.grayHlMade != null ? Number(st.grayHlMade) : null };
     const b = $("ps-target-gray"); if (b) b.value = (st && st.gray) || PS_GRAY_DEFAULT;
+    const h = $("ps-gray-hl"); if (h) h.value = String(st && st.grayHl != null ? st.grayHl : PS_GRAY_HL_DEFAULT);
     psGrayFaceSync();
+  }
+  // Highlights from photo % typed (Enter or leaving the box): kept with the document.
+  async function psGrayHlFromBox() {
+    const v = psGrayHlPct();
+    const box = $("ps-gray-hl"); if (box) box.value = String(v);
+    await psGraySaveDoc({ grayHl: v });
+    psGrayFaceSync();
+    trace("ps gray: highlights from photo " + v + "%");
+    setStatus("ok", "Highlights from photo " + v + "%" + (v ? "" : " (off)") + "." + (psGrayNeedsUpdate() ? " Click Update gray to use it." : ""));
   }
 
   // Enable "Make gray" only once a garment channel exists.
@@ -4614,9 +4630,47 @@
     throw new Error("could not read the garment mask's pixels.");
   }
 
+  // Keep photo highlights (pure). CLEAN is matte, so the satin sheen of the original
+  // photo is put back: gain = max(0, L − M) / (255 − M) per pixel (M = the photo's garment
+  // median, same histogram as psCorrectGray), box-blurred at ~0.6% of the long edge so
+  // print detail goes and the broad sheen stays, and cut to 0 where the photo's local
+  // contrast over that radius is high (old print edges), ramping between PS_HL_SD_LO and
+  // PS_HL_SD_HI. L: photo luma (w×h), valid: covered pixels, mask: garment (w×h).
+  // Returns { gain: Float32Array 0–1, median, maxGain, pct (% of garment px with gain), radius }.
+  const PS_HL_RADIUS_FRAC = 0.006;
+  const PS_HL_SD_LO = 12, PS_HL_SD_HI = 28;            // local std dev (luma): sheen below LO, print edges above HI
+  function psPhotoHighlightGain(L, valid, mask, w, h) {
+    const n = w * h, hist = new Uint32Array(256);
+    let cnt = 0;
+    for (let k = 0; k < n; k++) if (mask[k] > 127 && (!valid || valid[k])) { hist[L[k]]++; cnt++; }
+    const radius = Math.max(1, Math.round(Math.max(w, h) * PS_HL_RADIUS_FRAC));
+    if (!cnt) return { gain: new Float32Array(n), median: null, maxGain: 0, pct: 0, radius: radius };
+    let M = 0, acc = 0;
+    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= cnt / 2) { M = v; break; } }
+    const span = Math.max(1, 255 - M);
+    const raw = new Float32Array(n), Lf = new Float32Array(n), L2 = new Float32Array(n);
+    for (let k = 0; k < n; k++) {
+      const l = L[k]; Lf[k] = l; L2[k] = l * l;
+      if (mask[k] > 0 && (!valid || valid[k]) && l > M) raw[k] = (l - M) / span;
+    }
+    const gain = kbBoxBlur(raw, w, h, radius);
+    const mean = kbBoxBlur(Lf, w, h, radius), mean2 = kbBoxBlur(L2, w, h, radius);
+    let maxGain = 0, got = 0;
+    for (let k = 0; k < n; k++) {
+      const sd = Math.sqrt(Math.max(0, mean2[k] - mean[k] * mean[k]));
+      const keep = sd <= PS_HL_SD_LO ? 1 : (sd >= PS_HL_SD_HI ? 0 : (PS_HL_SD_HI - sd) / (PS_HL_SD_HI - PS_HL_SD_LO));
+      let g = gain[k] * keep;
+      if (!(g > 0) || mask[k] === 0) g = 0; else if (g > 1) g = 1;
+      gain[k] = g;
+      if (mask[k] > 127) { if (g > maxGain) maxGain = g; if (g > 1 / 255) got++; }
+    }
+    return { gain: gain, median: M, maxGain: maxGain, pct: Math.round(1000 * got / cnt) / 10, radius: radius };
+  }
   // Pixel math (pure): neutralise inside the mask, then shift the median to the
   // target evenly. rgba: Uint8Array (w×h×4, opaque). mask: Uint8Array (w×h).
-  function psCorrectGray(rgba, mask, n, target) {
+  // hl (optional) = { gain (w×h, 0–1), strength (0–1) }: after the shift,
+  // v + gain·strength·(255 − v) puts the photo's highlights back.
+  function psCorrectGray(rgba, mask, n, target, hl) {
     const hist = new Uint32Array(256);
     let cnt = 0;
     const lum = new Uint8Array(n);
@@ -4629,10 +4683,12 @@
     let median = 0, acc = 0;
     for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= cnt / 2) { median = v; break; } }
     const shift = target - median;
+    const hg = hl && hl.gain && hl.strength > 0 ? hl.gain : null, hs = hg ? hl.strength : 0;
     for (let k = 0, o = 0; k < n; k++, o += 4) {
       if (mask[k] === 0) continue;                    // outside: left as is (masked off anyway)
       let v = lum[k] + shift;
       if (v < 0) v = 0; if (v > 255) v = 255;
+      if (hg && hg[k] > 0) v = v + hg[k] * hs * (255 - v);
       // Soft mask edge: blend toward the corrected value by coverage.
       const a = mask[k] / 255;
       rgba[o]     = Math.round(rgba[o] * (1 - a) + v * a);
@@ -5131,8 +5187,11 @@
   // ----- MAKE GRAY ----------------------------------------------------------------
   function psGrayParams() {
     const t = psTargetHex();
-    return { method: "exact", targetHex: t ? t.hex : null };
+    return { method: "exact", targetHex: t ? t.hex : null, hlPct: psGrayHlPct() };
   }
+  // Step 5 › Highlights from photo % (0 = off): the original photo's sheen put back on GREY exact.
+  const PS_GRAY_HL_DEFAULT = 60;
+  function psGrayHlPct() { return Math.round(kbNum("ps-gray-hl", PS_GRAY_HL_DEFAULT, 0, 100)); }
 
   async function executePsGray(params) {
     const ps = psMod();
@@ -5194,8 +5253,25 @@
       step = "reading the garment mask";
       const alphaDoc = await psReadMaskAlpha(rect);
       const mask = (work.w === rw && work.h === rh) ? alphaDoc : kbResamplePlane(alphaDoc, rw, rh, work.w, work.h);
+      // 3b) Keep photo highlights: the ORIGINAL photo (UPSCALE, else the photo layer) read
+      // by itself over the same rect at the working size, strip-safe; CLEAN never enters it.
+      const hlPct = params.hlPct == null ? PS_GRAY_HL_DEFAULT : Math.max(0, Math.min(100, Number(params.hlPct) || 0));
+      let hl = null;
+      params.hl = null;
+      if (hlPct > 0 && cleanId != null) {
+        step = "reading the photo's highlights";
+        setStatus("busy", "Exact gray: reading the photo's highlights…");
+        const srcId = psOriginalPhotoId() != null ? psOriginalPhotoId() : photoId;
+        let pl = null;
+        await ps.core.executeAsModal(async function () { pl = await kbReadGarmentLuma(srcId, rect, { W: work.w, H: work.h }); }, { commandName: "KBImage — read photo highlights" });
+        const hg = psPhotoHighlightGain(pl.luma, pl.valid, mask, work.w, work.h);
+        hl = { gain: hg.gain, strength: hlPct / 100 };
+        params.hl = { pct: hlPct, photoMedian: hg.median, maxGain: Math.round(hg.maxGain * 1000) / 1000, gainedPct: hg.pct, radius: hg.radius, layer: srcId };
+        trace("ps gray: highlights from photo " + hlPct + "% (layer " + srcId + "): photo median " + hg.median + ", blur radius " + hg.radius + " px, max gain " + params.hl.maxGain
+          + ", " + hg.pct + "% of garment pixels gained (contrast cut above sd " + PS_HL_SD_LO + "–" + PS_HL_SD_HI + ")");
+      } else trace("ps gray: highlights from photo " + (hlPct > 0 ? "skipped (no CLEAN: the source is the photo, its sheen is already there)" : "off (0%)"));
       step = "correcting the gray";
-      const fix = psCorrectGray(work.rgba, mask, work.w * work.h, target);
+      const fix = psCorrectGray(work.rgba, mask, work.w * work.h, target, hl);
       trace("ps gray [" + method + "]: " + work.w + "x" + work.h + ", median " + fix.median + " → " + target + " (shift " + fix.shift + "), inside " + fix.inside + " px");
       if (!fix.inside) throw new Error("the garment mask is empty over the gray result.");
 
@@ -5222,7 +5298,7 @@
       }
       params.medianBefore = fix.median;
       params.shift = fix.shift;
-      return { layerIds: [greyId], afterSnapshotRef: null, state: { greyId: greyId, method: method, targetHex: psHex(t) } };
+      return { layerIds: [greyId], afterSnapshotRef: null, state: { greyId: greyId, method: method, targetHex: psHex(t), hlPct: hlPct } };
     } catch (err) {
       const e2 = new Error("Make gray (" + method + ") failed while " + step + ": " + ((err && err.message) || String(err)));
       e2.cause = err;
@@ -5255,13 +5331,14 @@
           if (!accepted) return null;
           try { await psGreyExactKeepOne(state && state.greyId); } catch (e) { traceErr("ps gray: delete the older " + PS_EXACT_LAYER, e); }   // replaced in place
           const hex = psTargetHex();
-          psGrayDoc = { docId: psActiveDocId(), made: state && state.targetHex ? state.targetHex : (hex ? hex.hex : PS_GRAY_DEFAULT) };
-          await psGraySaveDoc({ grayMade: psGrayDoc.made });
+          psGrayDoc = { docId: psActiveDocId(), made: state && state.targetHex ? state.targetHex : (hex ? hex.hex : PS_GRAY_DEFAULT),
+                        madeHl: state && state.hlPct != null ? state.hlPct : psGrayHlPct() };
+          await psGraySaveDoc({ grayMade: psGrayDoc.made, grayHlMade: psGrayDoc.madeHl });
           psGrayFaceSync();
           return null;
         },
       });
-      trace("ps gray: done");
+      trace("ps gray: done" + (p.hl ? ", highlights from photo " + p.hl.pct + "% (max gain " + p.hl.maxGain + ", " + p.hl.gainedPct + "% of the garment)" : ""));
       setStatus("ok", PS_EXACT_LAYER + " preview ready from " + (p.source === "CLEAN" ? "CLEAN" : "the photo") + " (median moved " + (p.medianBefore == null ? "?" : p.medianBefore) + " → " + p.targetHex
         + "). Accept to keep it, or Re-run.");
     } catch (err) {
@@ -5320,8 +5397,8 @@
       }
       let mm = null;
       if (!psMergedHeld && psMergedAccepted()) { step = "redoing MERGED"; mm = await psMergedRebuild(true); }
-      psGrayDoc = { docId: psActiveDocId(), made: p.targetHex };
-      await psGraySaveDoc({ grayMade: p.targetHex, gray: p.targetHex });
+      psGrayDoc = { docId: psActiveDocId(), made: p.targetHex, madeHl: p.hlPct };
+      await psGraySaveDoc({ grayMade: p.targetHex, gray: p.targetHex, grayHl: p.hlPct, grayHlMade: p.hlPct });
       const rec = logRecordSkeleton("printswap:gray-update", { targetHex: p.targetHex, medianBefore: p.medianBefore, shading: !!shadeMsg, merged: !!mm }, newId, "garment:" + PS_GARMENT_CH);
       await logRun(rec); await logFinalizeCommitted(rec.id);
       setStatus("ok", "Gray updated to " + p.targetHex + "." + shadeMsg + (mm ? " " + mm : "") + " Parts and prints kept.");
@@ -6308,6 +6385,7 @@
     if (!f) return null;
     const s = JSON.parse(f.json);
     return s ? { id: s.gtype || null, def: s.gtypeDef || null, stale: s.garmentStale || [], upscale: s.upscale || null, upInfo: s.upInfo || null, gray: s.gray || null, grayMade: s.grayMade || null,
+      grayHl: s.grayHl != null ? s.grayHl : null, grayHlMade: s.grayHlMade != null ? s.grayHlMade : null,
       trimColors: s.trimColors || null, piping: s.piping || null } : null;
   }
   async function psGtypeSave(id) {
@@ -8558,7 +8636,7 @@
       smoothPx:   Math.round(kbNum("ps-sh-smooth", PS_SMOOTH_PX, 0, 100)),
       lightPct:   kbNum("ps-sh-light", 50, 0, 100),
       burnPct:    kbNum("ps-sh-burn", 40, 0, 100),
-      hiPct:      kbNum("ps-sh-hi", 0, 0, 100),
+      hiPct:      kbNum("ps-sh-hi", 25, 0, 100),
       warm:       readPills("pills-ps-sh-warm", "on") !== "off",
       ground:     psTone.ground || null,
       ringPx:     psShadeRingPx(),
@@ -8754,11 +8832,11 @@
   const PS_SMOOTH_THRESHOLD = 15;                     // Surface Blur threshold (levels): fold edges stay
   // Fold smoothing in px (Surface Blur radius). Dark → Light tested on the blue pajama to the cream floral.
   const PS_SMOOTH_PX = 2;
-  // Fold light % (Light 1), Burn % (Levels 2) and Highlights % (0 on a light print, about 40
+  // Fold light % (Light 1), Burn % (Levels 2) and Highlights % (25 on a light print, about 40
   // on a dark one): first guesses until tested.
   const PS_TONE_PRESETS = {
-    "dark-light":  { fold: 2.0, smooth: 2, strength: 100, light: 60, burn: 50, hi: 0 },
-    "light-light": { fold: 1.0, smooth: 2, strength: 100, light: 50, burn: 40, hi: 0 },
+    "dark-light":  { fold: 2.0, smooth: 2, strength: 100, light: 60, burn: 50, hi: 25 },
+    "light-light": { fold: 1.0, smooth: 2, strength: 100, light: 50, burn: 40, hi: 25 },
     "light-dark":  { fold: 1.2, smooth: 2, strength: 100, light: 70, burn: 30, hi: 40 },
     "dark-dark":   { fold: 1.6, smooth: 2, strength: 100, light: 70, burn: 40, hi: 40 },
   };
