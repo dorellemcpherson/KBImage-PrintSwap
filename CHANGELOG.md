@@ -2,6 +2,11 @@
 
 Newest first. Versions marked *Photoshop test pending* were built and checked offline but not yet confirmed in Photoshop.
 
+## 0.20.14 (2026-10-22) · Photoshop test pending
+
+* **Step 5, Highlights from photo %** (default 60, 0 = off): GREY exact keeps the satin sheen of the original photo, which Remove print had made matte. Sharp edges of the old print are left out. It is saved with the document, and **Update gray** applies a changed value.
+* **Step 8:** Highlights % now starts at 25 on light prints (dark prints stay at 40).
+
 ## 0.20.13 (2026-10-22) · Photoshop test pending
 
 * **Trim colors:** every trim row (PIPING, BUTTON and the other trims) has two chips, **Original** and **Custom…**. Original shows the cord uncolored and opaque. You can also type a hex and press Enter.
